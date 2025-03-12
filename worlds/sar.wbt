@@ -54,6 +54,8 @@ DEF ROBOT1 Robot {
   translation -0.140251 0.362306 0
   rotation 0 0 -1 0.221754
   children [
+    GPS {
+    }
     DEF MAIN_BODY Pose {
       translation 0 0 0.0415
       children [
