@@ -15,7 +15,7 @@ class Enumerate(object):
 
 
 class Slave(Robot):
-    Mode = Enumerate('STOP MOVE_FORWARD AVOIDOBSTACLES TURN')
+    Mode = Enumerate("STOP MOVE_FORWARD AVOIDOBSTACLES TURN")
     timeStep = 32
     maxSpeed = 10.0
     mode = Mode.AVOIDOBSTACLES
@@ -28,9 +28,9 @@ class Slave(Robot):
     def __init__(self):
         super(Slave, self).__init__()
         self.mode = self.Mode.AVOIDOBSTACLES
-        self.camera = self.getDevice('camera')
+        self.camera = self.getDevice("camera")
         self.camera.enable(4 * self.timeStep)
-        self.receiver = self.getDevice('receiver')
+        self.receiver = self.getDevice("receiver")
         self.receiver.enable(self.timeStep)
         self.motors.append(self.getDevice("left wheel motor"))
         self.motors.append(self.getDevice("right wheel motor"))
@@ -39,7 +39,7 @@ class Slave(Robot):
         self.motors[0].setVelocity(0.0)
         self.motors[1].setVelocity(0.0)
         for dsnumber in range(0, 2):
-            self.distanceSensors.append(self.getDevice('ds' + str(dsnumber)))
+            self.distanceSensors.append(self.getDevice("ds" + str(dsnumber)))
             self.distanceSensors[-1].enable(self.timeStep)
 
     def run(self):
@@ -48,16 +48,24 @@ class Slave(Robot):
             if self.receiver.getQueueLength() > 0:
                 message = self.receiver.getString()
                 self.receiver.nextPacket()
-                print('I should ' + AnsiCodes.RED_FOREGROUND + message + AnsiCodes.RESET + '!')
-                if message == 'avoid obstacles':
+                print(
+                    "I should "
+                    + AnsiCodes.RED_FOREGROUND
+                    + message
+                    + AnsiCodes.RESET
+                    + "!"
+                )
+                if message == "avoid obstacles":
                     self.mode = self.Mode.AVOIDOBSTACLES
-                elif message == 'move forward':
+                elif message == "move forward":
                     self.mode = self.Mode.MOVE_FORWARD
-                elif message == 'stop':
+                elif message == "stop":
                     self.mode = self.Mode.STOP
-                elif message == 'turn':
+                elif message == "turn":
                     self.mode = self.Mode.TURN
-            delta = self.distanceSensors[0].getValue() - self.distanceSensors[1].getValue()
+            delta = (
+                self.distanceSensors[0].getValue() - self.distanceSensors[1].getValue()
+            )
             speeds = [0.0, 0.0]
 
             # Send actuators commands according to the mode.
@@ -80,5 +88,5 @@ class Slave(Robot):
 
 
 controller = Slave()
-common_print('slave')
+common_print("slave")
 controller.run()

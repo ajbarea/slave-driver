@@ -12,8 +12,8 @@ WorldInfo {
   title "Omniscience"
 }
 Viewpoint {
-  orientation -0.23090429863285805 -0.01018523501343265 0.972923155167246 3.245268365009745
-  position 2.7493370609021848 0.14270693160753067 1.601343978411531
+  orientation -0.26844510061299076 -0.03247063859582474 0.9627475710621454 3.388854362390399
+  position 2.7372743367373364 0.657797963988623 1.5869231984831988
 }
 TexturedBackground {
 }
@@ -486,7 +486,7 @@ DEF ROBOT2 Robot {
     density -1
     mass 0.5
   }
-  controller "slave"
+  controller "<none>"
 }
 DEF ROBOT3 Robot {
   translation 0 -0.15 0
@@ -705,7 +705,7 @@ DEF ROBOT3 Robot {
     density -1
     mass 0.5
   }
-  controller "slave"
+  controller "<none>"
 }
 Robot {
   children [
