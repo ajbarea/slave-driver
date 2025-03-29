@@ -1,373 +1,305 @@
-"""
-driver.py - Supervisor controller for robot simulation
-This controller handles keyboard input and sends commands to robots.
-It also manages goal-based behavior and reinforcement learning.
-"""
+"""Supervisor controller for robot simulation."""
 
-from controller import Supervisor
-from common import calculate_distance, safe_reset_physics, ReinforcementLearning
-import pickle
+from controller import Supervisor  # type: ignore
+import logging
 import os
+from common.logger import get_logger
+from common.common import calculate_distance, plot_training_metrics
+from common.config import (
+    SimulationConfig,
+    RobotConfig,
+    RLConfig,
+)
+from q_learning_controller import QLearningController
 
 
 class Driver(Supervisor):
-    # Constants
-    TIME_STEP = 64
-    DEFAULT_POSITION = [-0.3, -0.1, 0]
+    TIME_STEP = RobotConfig.TIME_STEP
 
     def __init__(self):
         super(Driver, self).__init__()
 
-        # Get simulation time information
-        self.world_time = self.getTime()
-        self.world_time_step = int(self.getBasicTimeStep())
-
-        # Initialize devices
+        # Basic setup
+        self.logger = get_logger(
+            __name__, level=getattr(logging, SimulationConfig.LOG_LEVEL_DRIVER, "INFO")
+        )
         self.emitter = self.getDevice("emitter")
         self.keyboard = self.getKeyboard()
         self.keyboard.enable(self.TIME_STEP)
 
-        # Get reference to robot
+        # Robot reference
         self.robot = self.getFromDef("ROBOT1")
         self.translation_field = self.robot.getField("translation")
 
-        # Track current robot mode for restoring after teleport
-        self.current_robot_mode = "avoid obstacles"
-
-        # Initialize learning parameters
-        self.q_table = {}
-        self.learning_rate = 0.1
-        self.discount_factor = 0.9
-        self.exploration_rate = 0.3
-        self.load_q_table()
-
-        # Current target position (for goal-seeking)
-        self.target_position = [0.62, -0.61]  # Single specific target position
+        # Navigation and positioning
+        self.target_position = None
         self.previous_distance_to_target = None
-        self.reached_target_threshold = (
-            0.1  # Distance threshold to consider target reached
-        )
 
-        # Position sharing
-        self.position_update_freq = 5  # Update position every N steps
+        # Create RL controller
+        self.rl_controller = QLearningController(self, self.logger)
 
-        # Track episode for training
-        self.episode_count = 0
-        self.max_episodes = 100
-        self.training_active = False
-        self.episode_step = 0
-        self.max_steps = 200  # Steps per episode
-        self.reward_report_freq = 20  # Only log rewards occasionally
+        # Step counter for periodic tasks
+        self.step_counter = 0
 
-        print("Driver ready - Press 'I' for help")
+        self.logger.info("Driver initialization complete")
+        self.logger.info("Press 'I' for help")
 
     def run(self):
-        """Main loop for the supervisor controller"""
+        """Main control loop."""
         self.display_help()
         previous_message = ""
-        step_counter = 0
-        last_stats_time = self.getTime()
 
         while True:
-            # Handle RL training if active
-            if self.training_active:
-                self.manage_training()
+            # Increment step counter
+            self.step_counter += 1
 
             # Send robot position information periodically
-            step_counter += 1
-            if step_counter % self.position_update_freq == 0:
+            if self.step_counter % SimulationConfig.POSITION_UPDATE_FREQ == 0:
                 position = self.translation_field.getSFVec3f()
                 pos_message = f"position:{position[0]},{position[1]}"
                 self.emitter.send(pos_message.encode("utf-8"))
 
-            # Process keyboard input
+            # Handle reinforcement learning training if active
+            if self.rl_controller.training_active:
+                position = self.translation_field.getSFVec3f()
+                self.rl_controller.manage_training_step(position)
+
+            # Handle goal seeking if active
+            elif (
+                hasattr(self.rl_controller, "goal_seeking_active")
+                and self.rl_controller.goal_seeking_active
+            ):
+                position = self.translation_field.getSFVec3f()
+                self.monitor_goal_seeking(position)
+
+            # Handle keyboard input and basic robot control
             k = self.keyboard.getKey()
             message = ""
 
             if k == ord("A"):
                 message = "avoid obstacles"
-                self.current_robot_mode = message
             elif k == ord("F"):
                 message = "move forward"
-                self.current_robot_mode = message
             elif k == ord("S"):
                 message = "stop"
-                self.current_robot_mode = message
             elif k == ord("T"):
                 message = "turn"
-                self.current_robot_mode = message
             elif k == ord("G"):
                 position = self.translation_field.getSFVec3f()
-                print(f"ROBOT1 is located at ({position[0]:.2f}, {position[1]:.2f})")
+                self.logger.info(
+                    f"ROBOT1 is located at ({position[0]:.2f}, {position[1]:.2f})"
+                )
             elif k == ord("R"):
-                # First stop the robot to prevent physics issues
-                self.emitter.send("stop".encode("utf-8"))
-
-                # Pause briefly to ensure the stop command is processed
-                self.step(self.TIME_STEP)
-
-                # Teleport the robot
-                self.translation_field.setSFVec3f(self.DEFAULT_POSITION)
-                print("Robot successfully reset to default position")
-
-                # Reset physics to prevent damage or unexpected behavior
-                self.robot.resetPhysics()
-
-                # Allow physics to stabilize for one step
-                self.step(self.TIME_STEP)
-
-                # Restore previous movement mode
-                if self.current_robot_mode != "stop":
-                    self.emitter.send(self.current_robot_mode.encode("utf-8"))
+                self.safely_reset_robot()
             elif k == ord("I"):
                 self.display_help()
             elif k == ord("L"):
-                self.start_learning()
-            elif k == ord("Q"):
-                self.save_q_table()
-                print("Q-table saved.")
+                self.rl_controller.start_learning()
 
-            # Send message to robot if needed
             if message and message != previous_message:
                 previous_message = message
-                print(f"Command: {message}")
+                self.logger.info(f"Command: {message}")
                 self.emitter.send(message.encode("utf-8"))
 
-            # Report statistics periodically
-            current_time = self.getTime()
-            if current_time - last_stats_time >= 60:  # Every minute
-                self.report_simulation_stats()
-                last_stats_time = current_time
-
-            # Exit condition
             if self.step(self.TIME_STEP) == -1:
-                self.save_q_table()
+                self.rl_controller.save_q_table()
                 break
 
+    def clear_pending_commands(self):
+        """Clear any pending commands in the message queue to ensure clean state."""
+        self.logger.info("Clearing pending commands to ensure clean state transition")
+        # Just step the simulation a few times without sending commands
+        for _ in range(5):
+            self.step(self.TIME_STEP)
+        return
+
+    def monitor_goal_seeking(self, position):
+        """
+        Monitor the robot's progress toward the goal during goal-seeking behavior.
+        Enhanced with insights from old_code.py.
+        """
+        if not self.target_position:
+            return
+
+        # Calculate current distance to target
+        current_distance = calculate_distance(position[:2], self.target_position)
+
+        # Check if the robot has reached the target
+        if current_distance < RLConfig.TARGET_THRESHOLD:
+            if not getattr(self.rl_controller, "goal_reached", False):
+                self.logger.info(f"🎯 Target reached! Distance: {current_distance:.2f}")
+                self.rl_controller.goal_reached = True
+
+                # Send stop command to the robot multiple times to ensure it stops
+                for _ in range(3):
+                    self.emitter.send("stop".encode("utf-8"))
+                    self.step(self.TIME_STEP)
+
+                # Report success time
+                elapsed_time = (
+                    self.getTime() - self.rl_controller.goal_seeking_start_time
+                )
+                self.logger.info(f"Goal reached in {elapsed_time:.1f} seconds")
+
+        # Check for timeout
+        current_time = self.getTime()
+        elapsed_time = current_time - self.rl_controller.goal_seeking_start_time
+
+        # Provide periodic progress updates during goal seeking
+        if (
+            not getattr(self.rl_controller, "goal_reached", False)
+            and self.step_counter % 100 == 0
+        ):
+            self.logger.info(
+                f"Goal seeking in progress - Distance: {current_distance:.2f}, "
+                f"Time elapsed: {elapsed_time:.1f}s"
+            )
+
+            # Check if robot is stuck (not making progress)
+            if hasattr(self, "last_goal_seeking_distance"):
+                # If distance hasn't changed much in last check
+                if abs(current_distance - self.last_goal_seeking_distance) < 0.05:
+                    self.stuck_counter = getattr(self, "stuck_counter", 0) + 1
+                    if self.stuck_counter >= 3:  # Stuck for 3 consecutive checks
+                        self.logger.info(
+                            f"Robot appears stuck at distance {current_distance:.2f}. Sending randomize command."
+                        )
+                        self.emitter.send("randomize".encode("utf-8"))
+                        self.stuck_counter = 0
+                else:
+                    self.stuck_counter = 0
+
+            # Update last distance
+            self.last_goal_seeking_distance = current_distance
+
+        # Check for timeout with extended time for goal seeking
+        if elapsed_time > SimulationConfig.GOAL_SEEKING_TIMEOUT:
+            self.logger.info(f"Goal seeking timed out after {elapsed_time:.1f} seconds")
+            self.rl_controller.goal_seeking_active = False
+            self.emitter.send("stop".encode("utf-8"))
+
     def display_help(self):
-        """Display available keyboard commands"""
-        print(
+        """Display available keyboard commands."""
+        self.logger.info(
             "\nCommands:\n"
             " I - Display this help message\n"
             " A - Avoid obstacles mode\n"
             " F - Move forward\n"
             " S - Stop\n"
             " T - Turn\n"
-            " R - Position ROBOT1 at (-0.3,-0.1)\n"
+            " R - Reset robot position\n"
             " G - Get (x,y) position of ROBOT1\n"
-            " L - Start reinforcement learning to reach the target\n"
-            " Q - Save the Q-table"
+            " L - Start reinforcement learning"
         )
 
-    def start_learning(self):
-        """Start the reinforcement learning process"""
-        print(
-            f"Beginning reinforcement learning to reach target at {self.target_position}..."
-        )
-        self.training_active = True
-        self.episode_count = 0
-        self.episode_step = 0
-
-        # First stop the robot to prevent physics issues
+    def safely_reset_robot(self):
+        """Safely reset the robot to its default position."""
         self.emitter.send("stop".encode("utf-8"))
-        print("Preparing robot for learning mode...")
-
-        # Pause briefly to ensure the stop command is processed
         self.step(self.TIME_STEP)
+        self.robot.resetPhysics()
+        self.translation_field.setSFVec3f(RobotConfig.DEFAULT_POSITION)
+        for _ in range(5):
+            self.step(self.TIME_STEP)
+        self.logger.info("Robot reset to default position")
 
-        # Reset robot position
-        self.translation_field.setSFVec3f(self.DEFAULT_POSITION)
+    def reset_robot_position(self, position):
+        """Reset the robot to a specific position with proper physics reset.
 
-        # Reset physics to prevent damage or unexpected behavior
+        Args:
+            position (list): The [x, y, z] position to reset to.
+        """
+        # Add small random offset for variability
+        import random
+
+        random_offset_x = random.uniform(-0.03, 0.03)
+        random_offset_y = random.uniform(-0.03, 0.03)
+        randomized_position = [
+            position[0] + random_offset_x,
+            position[1] + random_offset_y,
+            position[2],
+        ]
+
+        # Send stop command first
+        self.emitter.send("stop".encode("utf-8"))
+        for _ in range(3):  # Multiple steps to ensure stop is processed
+            self.step(self.TIME_STEP)
+
+        # Reset orientation to upright
+        rotation_field = self.robot.getField("rotation")
+        if rotation_field:
+            rotation_field.setSFRotation([0, 1, 0, 0])
+
+        # Reset position and physics
+        self.translation_field.setSFVec3f(randomized_position)
         self.robot.resetPhysics()
 
-        # Additional pause to allow physics stabilization
-        self.step(self.TIME_STEP)
+        # Reset velocities if fields exist
+        try:
+            velocity_field = self.robot.getField("velocity")
+            if velocity_field:
+                velocity_field.setSFVec3f([0, 0, 0])
+            angular_velocity_field = self.robot.getField("angularVelocity")
+            if angular_velocity_field:
+                angular_velocity_field.setSFVec3f([0, 0, 0])
+        except Exception:
+            pass  # Fields might not exist
 
-        # Initialize distance to target for reward calculation
-        position = self.translation_field.getSFVec3f()
-        self.previous_distance_to_target = self.calculate_distance_to_target(position)
+        # Give more time to stabilize
+        for _ in range(5):
+            self.step(self.TIME_STEP)
 
-        # Tell robot to enter learning mode with target information
-        target_message = f"learn:{self.target_position[0]},{self.target_position[1]}"
-        self.emitter.send(target_message.encode("utf-8"))
-        print("Robot repositioned and learning mode activated with target information")
-
-        # After initial setup, start the robot in avoid obstacles mode
-        # to begin the learning process with movement
-        self.step(self.TIME_STEP)  # Small delay before sending movement command
+        # Initialize with obstacle avoidance before learning
         self.emitter.send("avoid obstacles".encode("utf-8"))
-        self.current_robot_mode = "avoid obstacles"
-        print("Robot is now moving in learning mode")
+        self.step(self.TIME_STEP * 2)
 
-    def calculate_distance_to_target(self, position):
-        """Calculate distance from current position to target"""
-        if self.target_position is None:
-            return float("inf")
-        return calculate_distance(position, self.target_position)
+        self.logger.debug(f"Robot reset to position: {randomized_position}")
 
-    def calculate_reward(self, current_position):
-        """Calculate reward based on distance to target and progress"""
-        current_distance = self.calculate_distance_to_target(current_position)
+    def set_target_position(self, target_position):
+        """Set the target position for the robot."""
+        self.target_position = target_position
 
-        # Use the common ReinforcementLearning utility
-        reward = ReinforcementLearning.calculate_reward(
-            current_distance,
-            self.previous_distance_to_target,
-            self.reached_target_threshold,
-        )
+    def plot_training_results(self, rewards):
+        """Plot the training results."""
+        if not rewards:
+            self.logger.warning("No rewards to plot")
+            return
 
-        # Update previous distance for next calculation
-        self.previous_distance_to_target = current_distance
+        try:
+            # Create directory if it doesn't exist
+            os.makedirs(SimulationConfig.PLOT_DIR, exist_ok=True)
 
-        return reward
+            # Create episode numbers based on actual rewards length
+            episodes = list(range(1, len(rewards) + 1))
 
-    def manage_training(self):
-        """Manage the RL training process"""
-        # Get robot state
-        position = self.translation_field.getSFVec3f()
-
-        # Calculate reward based on distance to target
-        reward = self.calculate_reward(position)
-
-        # Send reward to the robot (silently)
-        self.emitter.send(f"reward:{reward}".encode("utf-8"))
-
-        # Only log rewards occasionally to reduce console spam
-        if self.episode_step % self.reward_report_freq == 0:
-            current_distance = self.calculate_distance_to_target(position)
-            print(
-                f"Training progress: Step {self.episode_step}, Distance to target: {current_distance:.2f}"
-            )
-
-        # If target reached, end episode early with success
-        current_distance = self.calculate_distance_to_target(position)
-        if current_distance < self.reached_target_threshold:
-            print(f"🎉 Target reached! Distance: {current_distance:.2f}")
-            self.episode_count += 1
-            self.episode_step = 0
-
-            # Reset robot position for next episode
-            self.reset_robot_position()
-
-            # Report progress
-            print(
-                f"Completed episode {self.episode_count}/{self.max_episodes} with SUCCESS"
-            )
-
-            # Continue with regular episode management...
-        else:
-            # Increment step counter
-            self.episode_step += 1
-
-            # Check if episode is complete due to steps
-            if self.episode_step >= self.max_steps:
-                self.episode_count += 1
-                self.episode_step = 0
-
-                # Reset robot position for next episode
-                self.reset_robot_position()
-
-                # Report progress
-                print(
-                    f"Completed episode {self.episode_count}/{self.max_episodes} - Target not reached"
+            # Ensure episodes and rewards have same length
+            if len(episodes) != len(rewards):
+                self.logger.warning(
+                    f"Length mismatch: episodes({len(episodes)}) != rewards({len(rewards)})"
                 )
+                # Truncate to shorter length to ensure they match
+                min_len = min(len(episodes), len(rewards))
+                episodes = episodes[:min_len]
+                rewards = rewards[:min_len]
 
-        # Reduce exploration rate over time
-        if self.episode_step == 0:  # At the start of each episode
-            self.exploration_rate = max(0.05, self.exploration_rate * 0.95)
-            self.emitter.send(f"exploration:{self.exploration_rate}".encode("utf-8"))
-
-            # Check if training is complete
-            if self.episode_count >= self.max_episodes:
-                self.training_active = False
-                self.save_q_table()
-                print("Training complete! Q-table saved.")
-                self.emitter.send("stop learn".encode("utf-8"))
-                # Stop command to halt the robot's movement
-                self.step(self.TIME_STEP)
-                self.emitter.send("stop".encode("utf-8"))
-                print("Robot stopped after completing training.")
-
-    def reset_robot_position(self):
-        """Safely reset the robot's position for a new episode"""
-        # Always use the default starting position for consistency
-        start_pos = self.DEFAULT_POSITION
-
-        # Use the common safe_reset_physics utility
-        safe_reset_physics(
-            self,
-            self.robot,
-            self.translation_field,
-            start_pos,
-            self.TIME_STEP,
-            self.emitter,
-        )
-
-        # Reset distance tracking
-        position = self.translation_field.getSFVec3f()
-        self.previous_distance_to_target = self.calculate_distance_to_target(position)
-
-        # Resume learning movement with avoid obstacles mode
-        self.emitter.send("avoid obstacles".encode("utf-8"))
-
-        # Send a randomize command to encourage exploration
-        self.emitter.send("randomize".encode("utf-8"))
-
-    def save_q_table(self):
-        """Save the Q-table to a file"""
-        try:
-            # Ensure the directory exists
-            save_dir = os.path.join(os.path.dirname(__file__), "data")
-            os.makedirs(save_dir, exist_ok=True)
-
-            # Save the Q-table to a file
-            q_table_path = os.path.join(save_dir, "q_table.pkl")
-            with open(q_table_path, "wb") as f:
-                pickle.dump(self.q_table, f)
-
-            # Try to get Q-table from robot for update
-            self.emitter.send("send q_table".encode("utf-8"))
-
-            print(f"Q-table saved to {q_table_path}")
-        except Exception as e:
-            print(f"Error saving Q-table: {e}")
-
-    def load_q_table(self):
-        """Load the Q-table from a file if it exists"""
-        try:
-            if os.path.exists("q_table.pkl"):
-                with open("q_table.pkl", "rb") as f:
-                    self.q_table = pickle.load(f)
-                print("Q-table loaded from file")
-        except Exception as e:
-            print(f"Error loading Q-table: {e}")
-            self.q_table = {}
-
-    def report_simulation_stats(self):
-        """Report statistics about the simulation"""
-        time = self.getTime()
-        robot_position = self.translation_field.getSFVec3f()
-
-        # Calculate distance to target if available
-        distance_to_target = "N/A"
-        if self.target_position:
-            distance_to_target = (
-                f"{calculate_distance(robot_position, self.target_position):.2f}"
+            # Plot training metrics
+            plot_training_metrics(
+                episodes,
+                rewards,
+                filename="training_results",
+                save_dir=SimulationConfig.PLOT_DIR,
             )
 
-        print(f"\n--- Simulation Statistics at {time:.1f}s ---")
-        print(f"  Robot position: ({robot_position[0]:.2f}, {robot_position[1]:.2f})")
-        print(f"  Target position: {self.target_position}")
-        print(f"  Distance to target: {distance_to_target}")
-        print(f"  Learning active: {self.training_active}")
-        if self.training_active:
-            print(f"  Episode: {self.episode_count}/{self.max_episodes}")
-            print(f"  Step: {self.episode_step}/{self.max_steps}")
-            print(f"  Exploration rate: {self.exploration_rate:.2f}")
-        print("-------------------------------------------\n")
+            self.logger.info(
+                f"Training results plotted to {SimulationConfig.PLOT_DIR}/training_results.png"
+            )
+        except Exception as e:
+            self.logger.error(f"Error plotting training results: {e}")
+            self.logger.error(
+                f"Episodes length: {len(episodes)}, Rewards length: {len(rewards)}"
+            )
 
 
 # Main entry point
-controller = Driver()
-controller.run()
+if __name__ == "__main__":
+    controller = Driver()
+    controller.run()

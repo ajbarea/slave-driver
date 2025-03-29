@@ -1,0 +1,338 @@
+"""
+Q-Learning Agent module for the Slave robot.
+
+This module encapsulates the reinforcement learning logic, separating it
+from the robot control code for better maintainability.
+"""
+
+import random
+import pickle
+import os
+from typing import Dict, List, Tuple, Optional, Any
+from common.logger import get_logger
+from common.rl_utils import get_discrete_state
+
+# Set up logger
+logger = get_logger(__name__)
+
+
+class QLearningAgent:
+    """
+    Q-Learning agent class that manages the reinforcement learning process.
+
+    This class encapsulates state discretization, action selection,
+    Q-table updates, and other reinforcement learning operations.
+    """
+
+    # Constants for action indices
+    FORWARD = 0
+    TURN_LEFT = 1
+    TURN_RIGHT = 2
+    BACKWARD = 3
+    STOP = 4
+
+    def __init__(
+        self,
+        learning_rate: float = 0.1,
+        min_learning_rate: float = 0.03,
+        discount_factor: float = 0.9,
+        min_discount_factor: float = 0.7,
+        exploration_rate: float = 0.3,
+        min_exploration_rate: float = 0.05,
+        max_speed: float = 10.0,
+    ):
+        """
+        Initialize the Q-learning agent with learning parameters.
+
+        Args:
+            learning_rate: Alpha parameter for Q-learning updates
+            min_learning_rate: Minimum learning rate after decay
+            discount_factor: Gamma parameter for future reward weighting
+            min_discount_factor: Minimum discount factor
+            exploration_rate: Epsilon for exploration-exploitation balance
+            min_exploration_rate: Minimum exploration rate
+            max_speed: Maximum robot speed for action execution
+        """
+        self.learning_rate = learning_rate
+        self.min_learning_rate = min_learning_rate
+        self.discount_factor = discount_factor
+        self.min_discount_factor = min_discount_factor
+        self.exploration_rate = exploration_rate
+        self.min_exploration_rate = min_exploration_rate
+        self.max_speed = max_speed
+
+        # Initialize Q-table and learning statistics
+        self.q_table: Dict[Tuple, List[float]] = {}
+        self.total_updates = 0
+        self.learning_episodes = 0
+        self.successful_episodes = 0
+
+        # Track learning metrics
+        self.td_errors: List[float] = []
+        self.learning_rates: List[float] = []
+        self.discount_factors: List[float] = []
+
+        # Shared state information
+        self.angle_bins = 6  # Reduced from 8
+        self.num_angle_bins = 6
+
+    def get_discrete_state(
+        self,
+        position: List[float],
+        target_position: List[float],
+        orientation: float,
+        left_sensor: float,
+        right_sensor: float,
+        wheel_velocities: List[float],
+    ) -> Optional[Tuple]:
+        """
+        Generate a simplified discrete state representation for Q-learning.
+        Uses the common rl_utils module.
+
+        Args:
+            position: Current [x, y] position
+            target_position: Target [x, y] position
+            orientation: Current robot orientation in radians
+            left_sensor: Left distance sensor reading
+            right_sensor: Right distance sensor reading
+            wheel_velocities: [left_wheel_velocity, right_wheel_velocity]
+
+        Returns:
+            A tuple representing the discrete state or None if inputs are invalid
+        """
+        return get_discrete_state(
+            position,
+            target_position,
+            orientation,
+            left_sensor,
+            right_sensor,
+            wheel_velocities,
+            self.angle_bins,
+        )
+
+    def choose_action(self, state: Tuple) -> int:
+        """
+        Select an action using a simplified epsilon-greedy strategy.
+
+        Args:
+            state: The current discrete state tuple
+
+        Returns:
+            The chosen action index
+        """
+        # Initialize Q-values for this state if not already done
+        if state not in self.q_table:
+            self.q_table[state] = [0.0] * 5  # Initialize Q-values for all actions
+
+        # Exploration: choose a random action based on exploration rate
+        if random.random() < self.exploration_rate:
+            # Simple random action selection
+            return random.randint(
+                0, 4
+            )  # 0=FORWARD, 1=TURN_LEFT, 2=TURN_RIGHT, 3=BACKWARD, 4=STOP
+
+        # Exploitation: choose the action with the highest Q-value
+        q_values = self.q_table[state]
+        max_q_value = max(q_values)
+        best_actions = [i for i, q in enumerate(q_values) if q == max_q_value]
+
+        # If multiple actions have the same value, choose randomly among them
+        return random.choice(best_actions)
+
+    def choose_best_action(self, state: Tuple) -> int:
+        """
+        Select the best action from the Q-table without exploration.
+
+        Args:
+            state: The current discrete state tuple
+
+        Returns:
+            The action index with the highest Q-value
+        """
+        # If state is unknown, initialize it
+        if state not in self.q_table:
+            self.q_table[state] = [0.0] * 5
+
+            # Extract state components for basic heuristic
+            distance_bin, angle_bin, left_obstacle, right_obstacle, is_moving = state
+
+            # Simple fallback for unknown states
+            if left_obstacle and right_obstacle:
+                return self.BACKWARD
+            elif left_obstacle:
+                return self.TURN_RIGHT
+            elif right_obstacle:
+                return self.TURN_LEFT
+            elif angle_bin < self.angle_bins // 2:
+                return self.TURN_RIGHT
+            else:
+                return self.TURN_LEFT
+
+        # Find action with highest Q-value
+        q_values = self.q_table[state]
+        max_q_value = max(q_values)
+        best_actions = [i for i, q in enumerate(q_values) if q == max_q_value]
+
+        # Choose randomly among best actions
+        return random.choice(best_actions)
+
+    def update_q_table(
+        self, state: Tuple, action: int, reward: float, next_state: Tuple
+    ) -> None:
+        """
+        Update the Q-table using standard Q-learning.
+
+        Args:
+            state: Previous state
+            action: Action taken
+            reward: Reward received
+            next_state: Next state after action
+        """
+        if state is None or next_state is None:
+            return
+
+        # Initialize Q-values if states don't exist
+        if state not in self.q_table:
+            self.q_table[state] = [0.0] * 5  # For 5 actions
+        if next_state not in self.q_table:
+            self.q_table[next_state] = [0.0] * 5  # For 5 actions
+
+        # Track total updates
+        self.total_updates += 1
+
+        # Simplified adaptive learning rate with global decay
+        adaptive_learning_rate = max(
+            self.min_learning_rate,
+            self.learning_rate * (0.99 ** (self.total_updates / 10000)),
+        )
+
+        # Simplified adaptive discount factor
+        adaptive_discount = max(
+            self.min_discount_factor,
+            self.discount_factor * (0.999 ** (self.total_updates / 5000)),
+        )
+
+        # Store the learning parameters for analysis
+        self.learning_rates.append(adaptive_learning_rate)
+        self.discount_factors.append(adaptive_discount)
+
+        # Standard Q-learning update formula
+        current_q = self.q_table[state][action]
+        next_max_q = max(self.q_table[next_state])
+
+        # Calculate the TD error
+        td_error = reward + adaptive_discount * next_max_q - current_q
+        self.td_errors.append(td_error)
+
+        # Update Q-value with bounds
+        new_q = current_q + adaptive_learning_rate * td_error
+        self.q_table[state][action] = max(-50.0, min(50.0, new_q))
+
+    def execute_action(self, action: int) -> List[float]:
+        """
+        Execute the given action and return the motor speeds.
+
+        Args:
+            action: The action index
+
+        Returns:
+            Motor speeds [left_speed, right_speed]
+        """
+        # Standard action execution
+        if action == self.FORWARD:
+            return [self.max_speed, self.max_speed]
+        elif action == self.TURN_LEFT:
+            return [self.max_speed / 2, -self.max_speed / 2]
+        elif action == self.TURN_RIGHT:
+            return [-self.max_speed / 2, self.max_speed / 2]
+        elif action == self.BACKWARD:
+            return [-self.max_speed, -self.max_speed]
+        elif action == self.STOP:
+            return [0.0, 0.0]
+        return [0.0, 0.0]
+
+    def get_learning_statistics(self) -> Dict[str, Any]:
+        """
+        Return statistics about the learning process for analysis.
+
+        Returns:
+            Dictionary containing learning statistics
+        """
+        stats = {
+            "q_table_size": len(self.q_table),
+            "learning_rate": self.learning_rate,
+            "min_learning_rate": self.min_learning_rate,
+            "discount_factor": self.discount_factor,
+            "successful_episodes": self.successful_episodes,
+            "total_updates": self.total_updates,
+        }
+
+        # Add derived statistics
+        if self.learning_rates:
+            stats["avg_learning_rate"] = sum(self.learning_rates[-100:]) / min(
+                100, len(self.learning_rates)
+            )
+        if self.discount_factors:
+            stats["avg_discount_factor"] = sum(self.discount_factors[-100:]) / min(
+                100, len(self.discount_factors)
+            )
+        if self.td_errors:
+            stats["avg_td_error"] = sum(abs(e) for e in self.td_errors[-100:]) / min(
+                100, len(self.td_errors)
+            )
+
+        return stats
+
+    def save_q_table(self, filepath: str) -> bool:
+        """
+        Save the Q-table to a file.
+
+        Args:
+            filepath: Path to save the Q-table
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+
+            # Save the Q-table
+            with open(filepath, "wb") as f:
+                pickle.dump(self.q_table, f)
+
+            logger.info(f"Q-table saved to {filepath} with {len(self.q_table)} states")
+            return True
+        except Exception as e:
+            logger.error(f"Error saving Q-table: {e}")
+            return False
+
+    def load_q_table(self, filepath: str) -> bool:
+        """
+        Load the Q-table from a file.
+
+        Args:
+            filepath: Path to the Q-table file
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if os.path.exists(filepath):
+                with open(filepath, "rb") as f:
+                    self.q_table = pickle.load(f)
+
+                logger.info(
+                    f"Q-table loaded from {filepath} with {len(self.q_table)} states"
+                )
+                return True
+            else:
+                logger.warning(
+                    f"Q-table file {filepath} not found. Starting with empty Q-table."
+                )
+                self.q_table = {}
+                return False
+        except Exception as e:
+            logger.error(f"Error loading Q-table: {e}")
+            self.q_table = {}
+            return False

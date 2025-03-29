@@ -1,3 +1,17 @@
 worlds/.sar.wbproj
 controllers/driver/data/q_table.pkl
 controllers/driver/__pycache__/common.cpython-313.pyc
+.DS_Store
+*.mp4
+
+__pycache__/
+*.py[cod]
+*$py.class
+*q_table.pkl
+*events.out.tfevents.*
+worlds/.sar.wbproj
+worlds/sar.wbt
+controllers/driver/data/*
+controllers/slave/data/*
+*.pyc
+examples/old_code.py

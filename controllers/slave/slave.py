@@ -1,11 +1,26 @@
 """
 Enhanced slave controller with additional Webots robot API functionality
+
+This module defines the Slave class, which extends the Robot class and provides
+functionalities for obstacle avoidance, reinforcement learning, and goal seeking.
 """
 
-from controller import AnsiCodes, Robot
-from common import normalize_angle, calculate_distance
-import math
+from controller import AnsiCodes, Robot  # type: ignore
 import random
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+import logging
+from common.common import calculate_distance
+from common.logger import get_logger
+from common.config import RLConfig, RobotConfig, SimulationConfig
+from common.rl_utils import get_discrete_state, get_action_name
+from q_learning_agent import QLearningAgent
+
+# Set up logger
+logger = get_logger(
+    __name__, level=getattr(logging, SimulationConfig.LOG_LEVEL_SLAVE, "INFO")
+)
 
 
 class Enumerate(object):
@@ -16,20 +31,26 @@ class Enumerate(object):
 
 class Slave(Robot):
     Mode = Enumerate("STOP MOVE_FORWARD AVOID_OBSTACLES TURN SEEK_GOAL LEARN")
-    timeStep = 32
-    maxSpeed = 10.0
+    # Define a discrete set of actions - simplified to most useful ones
+    Actions = Enumerate("FORWARD TURN_LEFT TURN_RIGHT BACKWARD STOP")
+    timeStep = RobotConfig.TIME_STEP
+    maxSpeed = RobotConfig.MAX_SPEED
     mode = Mode.AVOID_OBSTACLES
     motors = []
     distanceSensors = []
+    num_angle_bins = RobotConfig.NUM_ANGLE_BINS
 
     def boundSpeed(self, speed):
+        """Clamp the speed value within [-maxSpeed, maxSpeed]."""
         return max(-self.maxSpeed, min(self.maxSpeed, speed))
 
     def __init__(self):
+        """Initialize the slave robot, its sensors, devices and learning parameters."""
         super(Slave, self).__init__()
 
         # Get robot information
         self.robot_name = self.getName()
+        logger.info(f"Initializing robot: {self.robot_name}")
 
         # Get basic time step from the world
         self.world_time_step = int(self.getBasicTimeStep())
@@ -39,10 +60,8 @@ class Slave(Robot):
         try:
             custom_data = self.getCustomData()
             if custom_data and custom_data.strip():
-                print(f"Found custom data: {custom_data}")
-                # Could parse this to retrieve learning parameters
+                logger.info(f"Found custom data: {custom_data}")
         except Exception:
-            # Removed redundant print about no custom data
             pass
 
         self.mode = self.Mode.AVOID_OBSTACLES
@@ -63,111 +82,170 @@ class Slave(Robot):
         # Add GPS for position tracking
         self.gps = None
         try:
-            # Try to get the GPS device directly
             gps_device = self.getDevice("gps")
             self.gps = gps_device
             self.gps.enable(self.timeStep)
         except Exception:
-            print("INFO: Using supervisor position updates")
+            logger.info("Using supervisor position updates (GPS not available)")
             self.gps = None
 
         # For positioning without GPS
         self.position = [0, 0]  # Default position when unknown
+        self.orientation = 0.0  # Estimate of current orientation (radians)
 
-        # Learning parameters
+        # Initialize the Q-learning agent
+        self.q_agent = QLearningAgent(
+            learning_rate=RLConfig.LEARNING_RATE,
+            min_learning_rate=RLConfig.MIN_LEARNING_RATE,
+            discount_factor=RLConfig.DISCOUNT_FACTOR,
+            min_discount_factor=RLConfig.MIN_DISCOUNT_FACTOR,
+            exploration_rate=RLConfig.EXPLORATION_RATE,
+            min_exploration_rate=RLConfig.MIN_EXPLORATION_RATE,
+            max_speed=self.maxSpeed,
+        )
+
+        # Q-learning state
         self.learning_active = False
-        self.exploration_rate = 0.3
         self.target_position = None
         self.last_reward = 0
-        self.q_table = {}
+        self.current_state = None
+        self.last_action = None
 
         # Control verbose output
-        self.verbose_rewards = False  # Set to True to see all reward messages
+        self.verbose_rewards = False
         self.reward_count = 0
-        self.reward_report_freq = 20  # Only report every Nth reward
+        self.reward_report_freq = SimulationConfig.REWARD_REPORT_FREQ
 
-        # Exploration parameters
+        # Add simulation time tracking
+        self.start_time = self.getTime()
+
+        # Track previous action for logging
+        self.previous_action = None
+
+        # Exploration parameters for smoother driving
         self.random_behavior_counter = 0
         self.random_behavior_duration = 20  # Steps to perform random behavior
         self.random_direction = 1  # 1 for right, -1 for left
         self.is_random_walking = False
 
-        # Add simulation time tracking
-        self.start_time = self.getTime()
+        # For tracking learning performance
+        self.rewards_history = []
+        self.step_count = 0
+        self.episode_count = 0
+        self.last_plot_time = self.getTime()
+
+        # Flag to track if target reached message has been printed
+        self.target_reached_reported = False
+
+        # Add action persistence for smoother learning
+        self.action_persistence = 0  # Counter for current action duration
+        self.action_persistence_duration = RLConfig.ACTION_PERSISTENCE_INITIAL
+        self.current_persistent_action = None  # Current action being executed
+
+        # Add tracking for previous exec_action
+        self.previous_exec_action = None
+
+        logger.info(f"Slave robot initialization complete: {self.robot_name}")
 
     def run(self):
+        """Main control loop for the slave robot."""
+        logger.info("Starting slave robot control loop")
+
+        # Initialize variables for improved escape strategy
+        self.forward_failure_count = 0
+        self.last_escape_direction = None
+        self.escape_direction_counter = 0
+
         while True:
             # Read the supervisor order.
             if self.receiver.getQueueLength() > 0:
                 message = self.receiver.getString()
                 self.receiver.nextPacket()
 
-                # Process position updates - reduce verbosity
+                # Process position updates
                 if message.startswith("position:"):
                     try:
                         coords = message[9:].split(",")
                         if len(coords) == 2:
                             new_position = [float(coords[0]), float(coords[1])]
-
-                            # Only print significant updates when in SEEK_GOAL mode
-                            if (
-                                self.mode == self.Mode.SEEK_GOAL
-                                and self.target_position
-                                and (
-                                    not self.position
-                                    or calculate_distance(self.position, new_position)
-                                    > 0.2
-                                )
-                            ):
-                                # Calculate and display distance to target
-                                dist_to_target = calculate_distance(
-                                    new_position, self.target_position
-                                )
-                                print(
-                                    f"Position: ({new_position[0]:.2f}, {new_position[1]:.2f}) - "
-                                    f"Distance to target: {dist_to_target:.2f}"
-                                )
-
-                            # Update stored position
                             self.position = new_position
                     except ValueError:
-                        print("Invalid position data")
-                # Process messages
+                        logger.error("Invalid position data")
+
+                # Process rewards
                 elif message.startswith("reward:"):
-                    # Process reward from the supervisor
                     try:
-                        self.last_reward = float(message[7:])
+                        reward = float(message[7:])
+                        self.last_reward = reward
                         self.reward_count += 1
 
-                        # Only report rewards occasionally to reduce spam
+                        # Track reward for plotting
+                        self.rewards_history.append(reward)
+
+                        # Update Q-table if learning is active
                         if (
-                            self.verbose_rewards
-                            or self.reward_count % self.reward_report_freq == 0
+                            self.learning_active
+                            and self.current_state is not None
+                            and self.last_action is not None
                         ):
-                            print(f"Reward update: {self.last_reward:.2f}")
+                            next_state = self.get_discrete_state()
+                            self.q_agent.update_q_table(
+                                self.current_state, self.last_action, reward, next_state
+                            )
+                            self.current_state = next_state
+
+                            # Optionally adjust action persistence based on rewards
+                            if abs(reward) > 10:
+                                self.action_persistence = max(
+                                    0, self.action_persistence - 3
+                                )
                     except ValueError:
-                        print("Invalid reward value")
+                        logger.error("Invalid reward value")
+
+                elif message == "start_learning":
+                    self.mode = self.Mode.LEARN
+                    self.current_state = None  # Force state recalculation
+                    logger.info("Entering learning mode")
+
+                elif message == "send q_table":
+                    self.send_q_table()
+
+                elif message == "plot_learning":
+                    self.plot_rewards()
 
                 # Special commands
                 elif message == "randomize":
                     self.random_behavior_counter = self.random_behavior_duration
                     self.random_direction = 1 if random.random() > 0.5 else -1
                     self.is_random_walking = True
-                    # Removed print about random behavior
+
                 else:
-                    # Only print for certain message types, not all
-                    if not message.startswith("reward:"):
-                        print(
-                            "I should "
-                            + AnsiCodes.RED_FOREGROUND
-                            + message
-                            + AnsiCodes.RESET
-                            + "!"
+                    # Only print command messages under specific conditions
+                    if message.startswith(RLConfig.ACTION_COMMAND_PREFIX):
+                        # Extract action number from command
+                        try:
+                            current_action = int(message.split(":")[1])
+                            # Only log when action changes
+                            if current_action != self.previous_exec_action:
+                                action_name = get_action_name(current_action)
+                                # logger.info(f"Received command: {action_name}")
+                                self.previous_exec_action = current_action
+                        except (ValueError, IndexError):
+                            # If we can't parse the action, log it anyway
+                            logger.info(f"Received command: {message}")
+                    elif (
+                        not message.startswith("reward:")
+                        and not message.startswith("seek goal:")
+                        and not message.startswith("position:")
+                        and not message.startswith("exploration:")
+                        and not message.startswith("persistence:")
+                    ):
+                        logger.info(
+                            f"Received command: {AnsiCodes.RED_FOREGROUND}{message}{AnsiCodes.RESET}"
                         )
 
                     # Continue processing other message types
                     if message.startswith("learn:"):
-                        # Extract target position for learning
                         coords = message[6:].split(",")
                         if len(coords) == 2:
                             try:
@@ -176,12 +254,12 @@ class Slave(Robot):
                                 self.target_position = [x, y]
                                 self.learning_active = True
                                 self.mode = self.Mode.LEARN
-                                print(f"Learning to reach target at ({x}, {y})")
+                                logger.info(f"Learning to reach target at ({x}, {y})")
                             except ValueError:
-                                print("Invalid coordinates for learning target")
+                                logger.error("Invalid coordinates for learning target")
 
+                    # Process goal seeking
                     elif message.startswith("seek goal:"):
-                        # Extract target position for seeking
                         coords = message[10:].split(",")
                         if len(coords) == 2:
                             try:
@@ -189,43 +267,64 @@ class Slave(Robot):
                                 y = float(coords[1])
                                 self.target_position = [x, y]
                                 self.mode = self.Mode.SEEK_GOAL
-                                print(f"Seeking goal at ({x}, {y})")
-                            except ValueError:
-                                print("Invalid coordinates for goal")
+                                self.learning_active = (
+                                    False  # Turn off learning for exploitation
+                                )
 
+                                # Reset action persistence to allow quicker reactions
+                                self.action_persistence = 0
+                                self.current_persistent_action = None
+
+                                # Reset target reached flag
+                                self.target_reached_reported = False
+
+                                logger.info(f"Seeking goal at ({x}, {y})")
+                            except ValueError:
+                                logger.error("Invalid coordinates for goal")
+
+                    # Update exploration rate
                     elif message.startswith("exploration:"):
-                        # Update exploration rate
                         try:
-                            self.exploration_rate = float(message[12:])
-                            print(
-                                f"Exploration rate updated to {self.exploration_rate:.2f}"
+                            new_rate = float(message[12:])
+                            self.q_agent.exploration_rate = new_rate
+                            # logger.info(f"Exploration rate updated to {new_rate:.2f}")
+                        except ValueError:
+                            logger.error("Invalid exploration rate")
+
+                    # Process action persistence adjustments
+                    elif message.startswith("persistence:"):
+                        try:
+                            new_persistence = int(message[12:])
+                            self.action_persistence_duration = new_persistence
+                            # Reset current persistence counter to try new value immediately
+                            self.action_persistence = 0
+                            logger.debug(
+                                f"Action persistence updated to {new_persistence} steps"
                             )
                         except ValueError:
-                            print("Invalid exploration rate")
+                            logger.error("Invalid persistence value")
 
-                    elif message == "send q_table":
-                        # Would send Q-table to supervisor
-                        print("Q-table requested (not implemented)")
-
+                    # Other mode switches
                     elif message == "stop learn":
                         self.learning_active = False
                         self.mode = self.Mode.AVOID_OBSTACLES
-                        print("Learning mode stopped")
-
+                        logger.info("Learning mode stopped")
                     elif message == "learn":
                         self.learning_active = True
                         self.mode = self.Mode.LEARN
-                        print("Learning mode activated")
-
+                        if (
+                            not hasattr(self, "learn_mode_reported")
+                            or not self.learn_mode_reported
+                        ):
+                            logger.info("Learning mode activated")
+                            self.learn_mode_reported = True
                     elif message == "avoid obstacles":
                         self.mode = self.Mode.AVOID_OBSTACLES
-
                     elif message == "move forward":
                         self.mode = self.Mode.MOVE_FORWARD
-
                     elif message == "stop":
                         self.mode = self.Mode.STOP
-
+                        self.handle_reset()  # Add proper reset handling
                     elif message == "turn":
                         self.mode = self.Mode.TURN
 
@@ -235,31 +334,47 @@ class Slave(Robot):
             )
             speeds = [0.0, 0.0]
 
-            # Handle special random behavior to escape local minimums
-            if self.is_random_walking and self.random_behavior_counter > 0:
-                speeds[0] = self.random_direction * self.maxSpeed / 2
-                speeds[1] = -self.random_direction * self.maxSpeed / 2
-                self.random_behavior_counter -= 1
-                if self.random_behavior_counter == 0:
-                    self.is_random_walking = False
-                    # Removed print about random behavior completion
-            elif self.mode == self.Mode.AVOID_OBSTACLES:
+            # Simplify mode handling - reduce heuristic overheads
+            # Basic obstacle avoidance with less complexity
+            if self.mode == self.Mode.AVOID_OBSTACLES:
                 speeds[0] = self.boundSpeed(self.maxSpeed / 2 + 0.1 * delta)
                 speeds[1] = self.boundSpeed(self.maxSpeed / 2 - 0.1 * delta)
+
+                # Basic obstacle safety with fewer special cases
+                left_sensor = self.distanceSensors[0].getValue()
+                right_sensor = self.distanceSensors[1].getValue()
+
+                if (
+                    left_sensor > 800 and right_sensor > 800
+                ):  # Both sensors detect close obstacles
+                    speeds = [-self.maxSpeed / 2, -self.maxSpeed / 2]  # Back up
+                elif left_sensor > 800:  # Left obstacle
+                    speeds = [self.maxSpeed / 2, -self.maxSpeed / 3]
+                elif right_sensor > 800:  # Right obstacle
+                    speeds = [-self.maxSpeed / 3, self.maxSpeed / 2]
 
             elif self.mode == self.Mode.MOVE_FORWARD:
                 speeds[0] = self.maxSpeed
                 speeds[1] = self.maxSpeed
 
+                # Basic safety for MOVE_FORWARD - still need to avoid obstacles
+                left_sensor = self.distanceSensors[0].getValue()
+                right_sensor = self.distanceSensors[1].getValue()
+                if (
+                    left_sensor > 800 or right_sensor > 800
+                ):  # Only for very close obstacles
+                    speeds = [0.0, 0.0]  # Stop instead of crashing
+
             elif self.mode == self.Mode.TURN:
                 speeds[0] = self.maxSpeed / 2
                 speeds[1] = -self.maxSpeed / 2
 
-            elif self.mode == self.Mode.SEEK_GOAL or self.mode == self.Mode.LEARN:
-                # Use position from supervisor instead of GPS
-                position = None
+            elif self.mode == self.Mode.STOP:
+                speeds = [0.0, 0.0]
 
-                # First try GPS if available
+            elif self.mode == self.Mode.SEEK_GOAL or self.mode == self.Mode.LEARN:
+                # Get current position
+                position = None
                 if self.gps:
                     try:
                         position = self.gps.getValues()
@@ -272,123 +387,257 @@ class Slave(Robot):
                 if position is None:
                     position = self.position
 
-                if self.target_position:
-                    # Simple goal seeking behavior
-                    # Use distance sensors for obstacle avoidance
-                    left_obstacle = self.distanceSensors[0].getValue() < 500
-                    right_obstacle = self.distanceSensors[1].getValue() < 500
+                # Update our current position
+                if position:
+                    self.position = position
 
-                    # If we have position data, use it to guide the robot
-                    if position:
-                        try:
-                            # Calculate angle to target
-                            target_angle = math.atan2(
-                                self.target_position[1] - position[1],
-                                self.target_position[0] - position[0],
-                            )
+                # Learning mode - use reinforcement learning agent
+                if self.mode == self.Mode.LEARN and self.learning_active:
+                    # Get current state if not already set
+                    if self.current_state is None:
+                        self.current_state = self.get_discrete_state()
 
-                            # Get robot's orientation estimate
-                            robot_orientation = delta * 0.1
-
-                            # Calculate the angle difference
-                            angle_diff = normalize_angle(
-                                target_angle - robot_orientation
-                            )
-
-                            # Choose action based on angle difference
-                            if abs(angle_diff) < 0.2:  # Roughly aligned with target
-                                speeds[0] = self.maxSpeed
-                                speeds[1] = self.maxSpeed
-                            elif angle_diff > 0:  # Target is to the left
-                                speeds[0] = self.maxSpeed / 2
-                                speeds[1] = self.maxSpeed
-                            else:  # Target is to the right
-                                speeds[0] = self.maxSpeed
-                                speeds[1] = self.maxSpeed / 2
-                        except Exception as e:
-                            print(f"Error in goal navigation: {e}")
-                            # Fallback to simple movement pattern
-                            speeds[0] = self.maxSpeed / 2
-                            speeds[1] = self.maxSpeed / 2
+                    # Get action using Q-learning agent with simplified persistence logic
+                    if self.action_persistence == 0:
+                        action = self.q_agent.choose_action(self.current_state)
+                        self.current_persistent_action = action
+                        # Set action persistence with less complexity
+                        self.action_persistence = self.action_persistence_duration
                     else:
-                        # No position data, use basic search pattern
-                        # Rotate slowly to search
-                        speeds[0] = self.maxSpeed / 4
-                        speeds[1] = -self.maxSpeed / 4
+                        action = self.current_persistent_action
+                        self.action_persistence -= 1
 
-                    # Obstacle avoidance always takes priority
-                    if left_obstacle:
-                        speeds[0] = -self.maxSpeed / 2
-                        speeds[1] = self.maxSpeed
-                    elif right_obstacle:
-                        speeds[0] = self.maxSpeed
-                        speeds[1] = -self.maxSpeed / 2
+                    # Execute action
+                    speeds = self.q_agent.execute_action(action)
+                    self.last_action = action
 
-                    # Occasionally introduce randomness to prevent getting stuck
-                    if self.learning_active and random.random() < 0.02:  # 2% chance
-                        random_turn = random.choice([-1, 1])
-                        speeds[0] = random_turn * self.maxSpeed / 2
-                        speeds[1] = -random_turn * self.maxSpeed / 2
-                        # Removed print about random movement
+                # Goal seeking mode - use learned policy without exploration
+                elif self.mode == self.Mode.SEEK_GOAL and self.target_position:
+                    # Get current state
+                    state = self.get_discrete_state()
+
+                    # Calculate distance to target
+                    current_distance = calculate_distance(
+                        self.position, self.target_position
+                    )
+
+                    # Check if we've reached the target
+                    if current_distance < RLConfig.TARGET_THRESHOLD:
+                        # Target reached logic
+                        if not self.target_reached_reported:
+                            logger.info(
+                                f"🎯 Target reached in SEEK_GOAL mode! Distance: {current_distance:.2f}"
+                            )
+                            self.target_reached_reported = True
+
+                        speeds = [0.0, 0.0]  # Stop the robot
+                        # Force motor velocities to zero for more reliable stopping
+                        self.motors[0].setVelocity(0.0)
+                        self.motors[1].setVelocity(0.0)
+                    else:
+                        # Reset the flag if we move away from the target
+                        if (
+                            self.target_reached_reported
+                            and current_distance > RLConfig.TARGET_THRESHOLD * 1.5
+                        ):
+                            self.target_reached_reported = False
+
+                        # Simplified goal seeking behavior
+                        # Use Q-learning policy with minimal adjustments
+                        action = self.q_agent.choose_best_action(state)
+
+                        # Log action and state periodically
+                        if random.random() < 0.01:  # ~1% of steps
+                            action_name = get_action_name(action)
+                            logger.debug(
+                                f"Goal seeking: state={state}, action={action_name}, "
+                                f"distance={current_distance:.2f}"
+                            )
+
+                        speeds = self.q_agent.execute_action(action)
+
+                        # Basic safety override for imminent collisions
+                        left_sensor = self.distanceSensors[0].getValue()
+                        right_sensor = self.distanceSensors[1].getValue()
+
+                        if left_sensor > 800 and right_sensor > 800:
+                            speeds = [-self.maxSpeed / 2, -self.maxSpeed / 2]
+                        elif left_sensor > 800:
+                            speeds = [self.maxSpeed / 2, -self.maxSpeed / 3]
+                        elif right_sensor > 800:
+                            speeds = [-self.maxSpeed / 3, self.maxSpeed / 2]
+
+                # No target or not in learning mode
                 else:
-                    # No target, just avoid obstacles
+                    # Use basic obstacle avoidance
                     speeds[0] = self.boundSpeed(self.maxSpeed / 2 + 0.1 * delta)
                     speeds[1] = self.boundSpeed(self.maxSpeed / 2 - 0.1 * delta)
 
-            # Periodically report simulation statistics
-            if self.getTime() - self.start_time > 60:  # Every minute of simulation time
-                self.report_statistics()
-                self.start_time = self.getTime()
+                    # Apply obstacle safety logic for non-learning modes
+                    left_sensor = self.distanceSensors[0].getValue()
+                    right_sensor = self.distanceSensors[1].getValue()
 
+                    # Only override if obstacles are very close
+                    if left_sensor > 800 and right_sensor > 800:  # Higher threshold
+                        speeds = [-self.maxSpeed / 2, -self.maxSpeed / 2]  # Back up
+                    elif left_sensor > 800:  # Left obstacle very close
+                        speeds[0] = self.maxSpeed / 2
+                        speeds[1] = -self.maxSpeed / 3
+                    elif right_sensor > 800:  # Right obstacle very close
+                        speeds[0] = -self.maxSpeed / 3
+                        speeds[1] = self.maxSpeed / 2
+
+            # Set the motor speed
             self.motors[0].setVelocity(speeds[0])
             self.motors[1].setVelocity(speeds[1])
 
             # Perform a simulation step, quit the loop when Webots is about to quit.
             if self.step(self.timeStep) == -1:
-                # Before exiting, save some data to the robot
-                if self.learning_active:
+                # Before exiting, save some data and plot final results
+                if self.learning_active and len(self.rewards_history) > 0:
                     self.save_learning_progress()
+                    self.plot_rewards()
+
+                # Save the Q-table
+                self.q_agent.save_q_table(SimulationConfig.Q_TABLE_PATH)
+                logger.info("Robot controller exiting")
                 break
 
+    def get_discrete_state(self):
+        """Generate a discrete state representation for Q-learning using the utilities module."""
+        if not self.position or not self.target_position:
+            return None
+
+        # Get wheel velocities
+        left_wheel_velocity = self.motors[0].getVelocity()
+        right_wheel_velocity = self.motors[1].getVelocity()
+        wheel_velocities = [left_wheel_velocity, right_wheel_velocity]
+
+        # Get sensor readings
+        left_sensor_value = self.distanceSensors[0].getValue()
+        right_sensor_value = self.distanceSensors[1].getValue()
+
+        # Use the centralized state discretization function
+        return get_discrete_state(
+            self.position,
+            self.target_position,
+            self.orientation,
+            left_sensor_value,
+            right_sensor_value,
+            wheel_velocities,
+            self.q_agent.angle_bins,
+        )
+
+    def choose_escape_direction(self):
+        """Choose a better direction to escape when forward movement isn't possible."""
+        left_sensor = self.distanceSensors[0].getValue()
+        right_sensor = self.distanceSensors[1].getValue()
+
+        # If both sensors detect obstacles, back up
+        if left_sensor > 500 and right_sensor > 500:
+            return "backward"
+
+        # If left obstacle is closer, turn right
+        if left_sensor > right_sensor:
+            return "right"
+
+        # If right obstacle is closer, turn left
+        if right_sensor > left_sensor:
+            return "left"
+
+        # If unclear, use a random direction
+        return random.choice(["left", "right", "backward"])
+
     def get_mode_name(self, mode_value):
-        """Convert a mode value to its string name"""
+        """Convert a mode value to its string representation."""
         for name, value in vars(self.Mode).items():
             if value == mode_value:
                 return name
         return f"UNKNOWN_MODE({mode_value})"
 
-    def report_statistics(self):
-        """Report various statistics about the robot's performance"""
-        elapsed = self.getTime()
-        current_pos = self.position if self.position else [0, 0]
-
-        stats = {
-            "time": elapsed,
-            "position": current_pos,
-            "mode": self.get_mode_name(self.mode),
-            "reward_count": self.reward_count,
-        }
-
-        if self.target_position:
-            distance = calculate_distance(current_pos, self.target_position)
-            stats["distance_to_target"] = distance
-
-        print(f"--- Statistics at {elapsed:.1f}s ---")
-        for key, value in stats.items():
-            print(f"  {key}: {value}")
-
     def save_learning_progress(self):
-        """Save learning progress to robot custom data"""
-        # For now, just a placeholder showing the concept
-        if hasattr(self, "q_table") and self.q_table:
-            # In a real implementation, we'd serialize the q_table
-            data = f"learning_active:{self.learning_active},exploration:{self.exploration_rate}"
+        """Store current learning progress in the robot's custom data."""
+        if hasattr(self, "q_agent") and self.q_agent.q_table:
+            data = f"learning_active:{self.learning_active},exploration:{self.q_agent.exploration_rate}"
             try:
                 self.setCustomData(data)
-                print(f"Learning progress saved to robot: {data}")
+                logger.info(f"Learning progress saved to robot: {data}")
             except Exception as e:
-                print(f"Could not save data: {e}")
+                logger.error(f"Could not save data: {e}")
+
+    def send_q_table(self):
+        """Output Q-table statistics for supervisor review."""
+        if not hasattr(self, "emitter"):
+            return
+        try:
+            q_table_size = len(self.q_agent.q_table)
+            logger.info(f"Q-table information: {q_table_size} states")
+        except Exception as e:
+            logger.error(f"Error with Q-table: {e}")
+
+    def plot_rewards(self):
+        """Plot the rewards history to visualize the learning progress."""
+        if not self.rewards_history:
+            logger.warning("No rewards to plot")
+            return
+
+        # Plot raw rewards
+        plt.figure(figsize=(12, 6))
+        plt.plot(self.rewards_history, label="Rewards", color="lightblue", alpha=0.3)
+
+        # Apply smoothing for better visualization
+        if len(self.rewards_history) > 10:
+            window = min(len(self.rewards_history) // 10, 50)  # Adaptive window size
+            window = max(window, 2)  # Ensure window is at least 2
+            rewards_smoothed = np.convolve(
+                self.rewards_history, np.ones(window) / window, mode="valid"
+            )
+            plt.plot(
+                range(len(rewards_smoothed)),
+                rewards_smoothed,
+                label="Smoothed Rewards",
+                color="blue",
+                linewidth=2,
+            )
+
+        # Add title and labels
+        plt.title(f"Learning Progress - {self.robot_name}")
+        plt.xlabel("Step")
+        plt.ylabel("Reward")
+        plt.grid(alpha=0.3)
+        plt.legend()
+
+        # Save the plot
+        try:
+            plot_dir = SimulationConfig.PLOT_DIR
+            os.makedirs(plot_dir, exist_ok=True)
+            plot_path = os.path.join(plot_dir, f"{self.robot_name}_learning.png")
+            plt.savefig(plot_path)
+            logger.info(f"Learning plot saved to {plot_path}")
+        except Exception as e:
+            logger.error(f"Error saving plot: {e}")
+        plt.close()
+
+    def handle_reset(self):
+        """Handle a reset command by ensuring robot is properly stopped."""
+        # Stop motors
+        self.motors[0].setVelocity(0.0)
+        self.motors[1].setVelocity(0.0)
+
+        # Reset physics-related state
+        self.orientation = 0.0
+        self.action_persistence = 0
+        self.current_persistent_action = None
+        self.is_random_walking = False
+        self.random_behavior_counter = 0
+
+        # Give time for physics to settle
+        for _ in range(3):
+            if self.step(self.timeStep) == -1:
+                break
 
 
-controller = Slave()
-controller.run()
+# Initialize and run the controller
+if __name__ == "__main__":
+    controller = Slave()
+    controller.run()
