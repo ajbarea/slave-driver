@@ -59,8 +59,6 @@ slave_driver/
 - **R** - Reset robot position
 - **G** - Get current robot position
 - **L** - Start reinforcement learning
-- **P** - Plot training results
-- **Q** - Save the Q-table
 
 ## Reinforcement Learning Implementation
 
@@ -114,7 +112,6 @@ The robot's state is discretized into:
 3. Learning statistics will be displayed in the console
 4. After training completes, the robot automatically switches to goal-seeking mode
 5. Performance plots are saved to the data directory
-6. Press **P** at any time to plot current training results
 
 ## Performance Analysis
 
