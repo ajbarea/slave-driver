@@ -218,13 +218,17 @@ class QLearningController:
         This is a simplified version just for the driver controller.
         The actual Q-learning happens in the slave robot.
         """
-        # Use epsilon-greedy approach with simpler logic
+        # Use epsilon-greedy approach
+        allow_stop = current_distance < RLConfig.TARGET_THRESHOLD
+        action_indices = [0, 1, 2, 3]
+        if allow_stop:
+            action_indices.append(4)
         if random.random() < self.exploration_rate:
             # Simple random exploration without special cases
-            return random.randint(0, 4)  # All actions equally likely
+            return random.choice(action_indices)
         else:
             # Simple exploitation logic
-            if current_distance < RLConfig.TARGET_THRESHOLD:
+            if allow_stop:
                 return 4  # STOP
             else:
                 return 0  # FORWARD

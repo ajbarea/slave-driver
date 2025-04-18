@@ -366,50 +366,6 @@ def get_next_goal_position(
     return position_list[current_index]
 
 
-def discretize_state(
-    position: List[float],
-    target_position: List[float],
-    num_distance_bins: int = 5,
-    num_angle_bins: int = 8,
-    max_distance: float = 3.0,
-) -> Optional[Tuple[int, int]]:
-    """
-    Discretize continuous position data into bins representing state.
-
-    Args:
-        position (list): Current [x, y] position.
-        target_position (list): Target [x, y] position.
-        num_distance_bins (int): Number of distance bins.
-        num_angle_bins (int): Number of angle bins.
-        max_distance (float): Maximum expected distance for binning.
-
-    Returns:
-        tuple or None: Discretized state (distance_bin, angle_bin) or None if inputs are invalid.
-    """
-    if not position or not target_position:
-        return None
-
-    distance = calculate_distance(position, target_position)
-    angle = math.atan2(
-        target_position[1] - position[1], target_position[0] - position[0]
-    )
-
-    if distance < 0.3:
-        distance_bin = 0
-    elif distance < 0.6:
-        distance_bin = 1
-    elif distance < 1.0:
-        distance_bin = 2
-    elif distance < 1.5:
-        distance_bin = 3
-    else:
-        distance_bin = 4
-
-    angle_bin = int((angle + math.pi) / (2 * math.pi) * num_angle_bins) % num_angle_bins
-
-    return (distance_bin, angle_bin)
-
-
 def calculate_smooth_turn(
     sensor_value: float, threshold: int = 500, max_value: int = 1000
 ) -> float:

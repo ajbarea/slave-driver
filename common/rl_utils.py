@@ -99,15 +99,19 @@ def calculate_reward(
     target_position: List[float],
     previous_distance: Optional[float] = None,
     target_threshold: float = 0.1,
+    orientation: Optional[float] = None,
+    wheel_velocities: Optional[List[float]] = None,
 ) -> float:
     """
-    Calculate reward based on progress toward the target.
+    Calculate reward based on progress toward the target, with optional orientation bonus and penalties.
 
     Args:
         current_position: Current [x, y] position
         target_position: Target [x, y] position
         previous_distance: Previous distance to target
         target_threshold: Distance threshold to consider target reached
+        orientation: Current robot orientation in radians (optional)
+        wheel_velocities: [left_wheel_velocity, right_wheel_velocity] (optional)
 
     Returns:
         Calculated reward value
@@ -126,22 +130,49 @@ def calculate_reward(
     # Calculate improvement (positive means getting closer)
     distance_improvement = previous_distance - current_distance
 
-    # Base reward structure - simple and focused on primary objective
+    # Main reward: progress toward target
     if distance_improvement > 0:
-        # Reward for moving closer to target
         base_reward = 10.0 * distance_improvement
     else:
-        # Penalty for moving away from target
         base_reward = -8.0 * abs(distance_improvement)
 
     # Proximity bonus - higher when closer to target
     proximity_bonus = 1.0 / (current_distance + 0.5)
 
+    # Orientation bonus (small, only if orientation is provided)
+    orientation_bonus = 0.0
+    if orientation is not None:
+        dx = target_position[0] - current_position[0]
+        dy = target_position[1] - current_position[1]
+        angle_to_target = math.atan2(dy, dx)
+        angle_diff = abs(normalize_angle(angle_to_target - orientation))
+        # Bonus is highest when facing the target (angle_diff ~ 0)
+        orientation_bonus = 0.5 * (1.0 - angle_diff / math.pi)  # Max 0.5
+
+    # Penalty for unnecessary stops (if not close to target)
+    stop_penalty = 0.0
+    if wheel_velocities is not None and current_distance > target_threshold * 2:
+        if abs(wheel_velocities[0]) < 0.05 and abs(wheel_velocities[1]) < 0.05:
+            stop_penalty = -1.0  # Penalize stopping far from target
+
+    # Penalty for spins (turning in place: wheels in opposite directions)
+    spin_penalty = 0.0
+    if wheel_velocities is not None:
+        if wheel_velocities[0] * wheel_velocities[1] < 0:
+            spin_penalty = -0.5  # Small penalty for spinning in place
+
     # Small step penalty to encourage efficiency
     step_penalty = -0.1
 
     # Combine all reward components
-    total_reward = base_reward + proximity_bonus + step_penalty
+    total_reward = (
+        base_reward
+        + proximity_bonus
+        + orientation_bonus
+        + stop_penalty
+        + spin_penalty
+        + step_penalty
+    )
 
     return total_reward
 

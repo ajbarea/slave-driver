@@ -11,6 +11,7 @@ import os
 from typing import Dict, List, Tuple, Optional, Any
 from common.logger import get_logger
 from common.rl_utils import get_discrete_state
+from common.config import RLConfig
 
 # Set up logger
 logger = get_logger(__name__)
@@ -40,6 +41,7 @@ class QLearningAgent:
         exploration_rate: float = 0.3,
         min_exploration_rate: float = 0.05,
         max_speed: float = 10.0,
+        angle_bins: int = 6,
     ):
         """
         Initialize the Q-learning agent with learning parameters.
@@ -52,6 +54,7 @@ class QLearningAgent:
             exploration_rate: Epsilon for exploration-exploitation balance
             min_exploration_rate: Minimum exploration rate
             max_speed: Maximum robot speed for action execution
+            angle_bins: Number of bins for discretizing angles
         """
         self.learning_rate = learning_rate
         self.min_learning_rate = min_learning_rate
@@ -60,6 +63,7 @@ class QLearningAgent:
         self.exploration_rate = exploration_rate
         self.min_exploration_rate = min_exploration_rate
         self.max_speed = max_speed
+        self.angle_bins = angle_bins
 
         # Initialize Q-table and learning statistics
         self.q_table: Dict[Tuple, List[float]] = {}
@@ -72,10 +76,6 @@ class QLearningAgent:
         self.learning_rates: List[float] = []
         self.discount_factors: List[float] = []
 
-        # Shared state information
-        self.angle_bins = 6  # Reduced from 8
-        self.num_angle_bins = 6
-
     def get_discrete_state(
         self,
         position: List[float],
@@ -86,8 +86,7 @@ class QLearningAgent:
         wheel_velocities: List[float],
     ) -> Optional[Tuple]:
         """
-        Generate a simplified discrete state representation for Q-learning.
-        Uses the common rl_utils module.
+        Generate a discrete state representation for Q-learning using the centralized rl_utils function.
 
         Args:
             position: Current [x, y] position
@@ -110,12 +109,14 @@ class QLearningAgent:
             self.angle_bins,
         )
 
-    def choose_action(self, state: Tuple) -> int:
+    def choose_action(self, state: Tuple, current_distance: float = None) -> int:
         """
         Select an action using a simplified epsilon-greedy strategy.
+        Only allow STOP if close to the target.
 
         Args:
             state: The current discrete state tuple
+            current_distance: Current distance to target (float)
 
         Returns:
             The chosen action index
@@ -124,27 +125,34 @@ class QLearningAgent:
         if state not in self.q_table:
             self.q_table[state] = [0.0] * 5  # Initialize Q-values for all actions
 
+        # Determine allowed actions
+        allow_stop = (
+            current_distance is not None
+            and current_distance <= RLConfig.TARGET_THRESHOLD
+        )
+        action_indices = [0, 1, 2, 3]  # FORWARD, TURN_LEFT, TURN_RIGHT, BACKWARD
+        if allow_stop:
+            action_indices.append(4)  # STOP
+
         # Exploration: choose a random action based on exploration rate
         if random.random() < self.exploration_rate:
-            # Simple random action selection
-            return random.randint(
-                0, 4
-            )  # 0=FORWARD, 1=TURN_LEFT, 2=TURN_RIGHT, 3=BACKWARD, 4=STOP
+            return random.choice(action_indices)
 
-        # Exploitation: choose the action with the highest Q-value
+        # Exploitation: choose the action with the highest Q-value among allowed actions
         q_values = self.q_table[state]
-        max_q_value = max(q_values)
-        best_actions = [i for i, q in enumerate(q_values) if q == max_q_value]
-
-        # If multiple actions have the same value, choose randomly among them
+        filtered_q = [(i, q_values[i]) for i in action_indices]
+        max_q_value = max(q for i, q in filtered_q)
+        best_actions = [i for i, q in filtered_q if q == max_q_value]
         return random.choice(best_actions)
 
-    def choose_best_action(self, state: Tuple) -> int:
+    def choose_best_action(self, state: Tuple, current_distance: float = None) -> int:
         """
         Select the best action from the Q-table without exploration.
+        Only allow STOP if close to the target.
 
         Args:
             state: The current discrete state tuple
+            current_distance: Current distance to target (float)
 
         Returns:
             The action index with the highest Q-value
@@ -168,12 +176,19 @@ class QLearningAgent:
             else:
                 return self.TURN_LEFT
 
-        # Find action with highest Q-value
-        q_values = self.q_table[state]
-        max_q_value = max(q_values)
-        best_actions = [i for i, q in enumerate(q_values) if q == max_q_value]
+        # Determine allowed actions
+        allow_stop = (
+            current_distance is not None
+            and current_distance <= RLConfig.TARGET_THRESHOLD
+        )
+        action_indices = [0, 1, 2, 3]
+        if allow_stop:
+            action_indices.append(4)
 
-        # Choose randomly among best actions
+        q_values = self.q_table[state]
+        filtered_q = [(i, q_values[i]) for i in action_indices]
+        max_q_value = max(q for i, q in filtered_q)
+        best_actions = [i for i, q in filtered_q if q == max_q_value]
         return random.choice(best_actions)
 
     def update_q_table(
@@ -200,10 +215,10 @@ class QLearningAgent:
         # Track total updates
         self.total_updates += 1
 
-        # Simplified adaptive learning rate with global decay
+        # Use adaptive learning rate decay
         adaptive_learning_rate = max(
             self.min_learning_rate,
-            self.learning_rate * (0.99 ** (self.total_updates / 10000)),
+            self.learning_rate * (RLConfig.LEARNING_RATE_DECAY_BASE ** (self.total_updates / RLConfig.LEARNING_RATE_DECAY_DENOM)),
         )
 
         # Simplified adaptive discount factor

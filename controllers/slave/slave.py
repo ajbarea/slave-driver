@@ -14,7 +14,7 @@ import logging
 from common.common import calculate_distance
 from common.logger import get_logger
 from common.config import RLConfig, RobotConfig, SimulationConfig
-from common.rl_utils import get_discrete_state, get_action_name
+from common.rl_utils import get_action_name
 from q_learning_agent import QLearningAgent
 
 # Set up logger
@@ -31,14 +31,12 @@ class Enumerate(object):
 
 class Slave(Robot):
     Mode = Enumerate("STOP MOVE_FORWARD AVOID_OBSTACLES TURN SEEK_GOAL LEARN")
-    # Define a discrete set of actions - simplified to most useful ones
     Actions = Enumerate("FORWARD TURN_LEFT TURN_RIGHT BACKWARD STOP")
     timeStep = RobotConfig.TIME_STEP
     maxSpeed = RobotConfig.MAX_SPEED
     mode = Mode.AVOID_OBSTACLES
     motors = []
     distanceSensors = []
-    num_angle_bins = RobotConfig.NUM_ANGLE_BINS
 
     def boundSpeed(self, speed):
         """Clamp the speed value within [-maxSpeed, maxSpeed]."""
@@ -397,9 +395,21 @@ class Slave(Robot):
                     if self.current_state is None:
                         self.current_state = self.get_discrete_state()
 
+                    # Calculate distance to target for STOP filtering
+                    current_distance = None
+                    if self.target_position and self.position:
+                        try:
+                            current_distance = calculate_distance(
+                                self.position, self.target_position
+                            )
+                        except Exception:
+                            current_distance = None
+
                     # Get action using Q-learning agent with simplified persistence logic
                     if self.action_persistence == 0:
-                        action = self.q_agent.choose_action(self.current_state)
+                        action = self.q_agent.choose_action(
+                            self.current_state, current_distance
+                        )
                         self.current_persistent_action = action
                         # Set action persistence with less complexity
                         self.action_persistence = self.action_persistence_duration
@@ -444,7 +454,9 @@ class Slave(Robot):
 
                         # Simplified goal seeking behavior
                         # Use Q-learning policy with minimal adjustments
-                        action = self.q_agent.choose_best_action(state)
+                        action = self.q_agent.choose_best_action(
+                            state, current_distance
+                        )
 
                         # Log action and state periodically
                         if random.random() < 0.01:  # ~1% of steps
@@ -504,7 +516,7 @@ class Slave(Robot):
                 break
 
     def get_discrete_state(self):
-        """Generate a discrete state representation for Q-learning using the utilities module."""
+        """Generate a discrete state representation for Q-learning using the centralized rl_utils function."""
         if not self.position or not self.target_position:
             return None
 
@@ -517,15 +529,14 @@ class Slave(Robot):
         left_sensor_value = self.distanceSensors[0].getValue()
         right_sensor_value = self.distanceSensors[1].getValue()
 
-        # Use the centralized state discretization function
-        return get_discrete_state(
+        # Use the QLearningAgent's method, which delegates to the centralized function
+        return self.q_agent.get_discrete_state(
             self.position,
             self.target_position,
             self.orientation,
             left_sensor_value,
             right_sensor_value,
             wheel_velocities,
-            self.q_agent.angle_bins,
         )
 
     def choose_escape_direction(self):
