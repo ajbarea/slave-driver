@@ -39,7 +39,6 @@ class QLearningAgent:
         discount_factor: float = 0.9,
         min_discount_factor: float = 0.7,
         exploration_rate: float = 0.3,
-        min_exploration_rate: float = 0.05,
         max_speed: float = 10.0,
         angle_bins: int = 8,
     ):
@@ -52,7 +51,6 @@ class QLearningAgent:
             discount_factor: Gamma parameter for future reward weighting
             min_discount_factor: Minimum discount factor
             exploration_rate: Epsilon for exploration-exploitation balance
-            min_exploration_rate: Minimum exploration rate
             max_speed: Maximum robot speed for action execution
             angle_bins: Number of bins for discretizing angles
         """
@@ -61,15 +59,12 @@ class QLearningAgent:
         self.discount_factor = discount_factor
         self.min_discount_factor = min_discount_factor
         self.exploration_rate = exploration_rate
-        self.min_exploration_rate = min_exploration_rate
         self.max_speed = max_speed
         self.angle_bins = angle_bins
 
         # Initialize Q-table and learning statistics
         self.q_table: Dict[Tuple, List[float]] = {}
         self.total_updates = 0
-        self.learning_episodes = 0
-        self.successful_episodes = 0
 
         # Track learning metrics
         self.td_errors: List[float] = []

@@ -11,10 +11,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 import logging
-from common.common import calculate_distance
 from common.logger import get_logger
 from common.config import RLConfig, RobotConfig, SimulationConfig
-from common.rl_utils import get_action_name
+from common.rl_utils import calculate_distance, get_action_name
 from q_learning_agent import QLearningAgent
 
 # Set up logger
@@ -97,7 +96,6 @@ class Slave(Robot):
             discount_factor=RLConfig.DISCOUNT_FACTOR,
             min_discount_factor=RLConfig.MIN_DISCOUNT_FACTOR,
             exploration_rate=RLConfig.EXPLORATION_RATE,
-            min_exploration_rate=RLConfig.MIN_EXPLORATION_RATE,
             max_speed=self.maxSpeed,
         )
 

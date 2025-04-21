@@ -1,8 +1,7 @@
 """Q-Learning controller that manages the training process."""
 
 from common.config import RLConfig, RobotConfig, SimulationConfig
-from common.common import calculate_distance
-from common.rl_utils import calculate_reward, get_action_name
+from common.rl_utils import calculate_distance, calculate_reward, get_action_name
 import random
 
 
