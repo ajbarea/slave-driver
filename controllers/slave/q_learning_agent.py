@@ -8,7 +8,7 @@ from the robot control code for better maintainability.
 import random
 import pickle
 import os
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional
 from common.logger import get_logger
 from common.rl_utils import get_discrete_state
 from common.config import RLConfig
@@ -280,38 +280,6 @@ class QLearningAgent:
         elif action == self.STOP:
             return [0.0, 0.0]
         return [0.0, 0.0]
-
-    def get_learning_statistics(self) -> Dict[str, Any]:
-        """
-        Return statistics about the learning process for analysis.
-
-        Returns:
-            Dictionary containing learning statistics
-        """
-        stats = {
-            "q_table_size": len(self.q_table),
-            "learning_rate": self.learning_rate,
-            "min_learning_rate": self.min_learning_rate,
-            "discount_factor": self.discount_factor,
-            "successful_episodes": self.successful_episodes,
-            "total_updates": self.total_updates,
-        }
-
-        # Add derived statistics
-        if self.learning_rates:
-            stats["avg_learning_rate"] = sum(self.learning_rates[-100:]) / min(
-                100, len(self.learning_rates)
-            )
-        if self.discount_factors:
-            stats["avg_discount_factor"] = sum(self.discount_factors[-100:]) / min(
-                100, len(self.discount_factors)
-            )
-        if self.td_errors:
-            stats["avg_td_error"] = sum(abs(e) for e in self.td_errors[-100:]) / min(
-                100, len(self.td_errors)
-            )
-
-        return stats
 
     def save_q_table(self, filepath: str) -> bool:
         """

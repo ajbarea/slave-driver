@@ -1,6 +1,3 @@
-worlds/.sar.wbproj
-controllers/driver/data/q_table.pkl
-controllers/driver/__pycache__/common.cpython-313.pyc
 .DS_Store
 *.mp4
 
@@ -15,4 +12,3 @@ controllers/driver/data/*
 controllers/slave/data/*
 *.pyc
 examples/old_code.py
-data/*

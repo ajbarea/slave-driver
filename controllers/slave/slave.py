@@ -88,7 +88,7 @@ class Slave(Robot):
 
         # For positioning without GPS
         self.position = [0, 0]  # Default position when unknown
-        self.orientation = 0.0  # Estimate of current orientation (radians)
+        self.orientation = 0.0  # Estimate of current orientation
 
         # Initialize the Q-learning agent
         self.q_agent = QLearningAgent(
@@ -108,28 +108,8 @@ class Slave(Robot):
         self.current_state = None
         self.last_action = None
 
-        # Control verbose output
-        self.verbose_rewards = False
-        self.reward_count = 0
-        self.reward_report_freq = SimulationConfig.REWARD_REPORT_FREQ
-
-        # Add simulation time tracking
-        self.start_time = self.getTime()
-
-        # Track previous action for logging
-        self.previous_action = None
-
-        # Exploration parameters for smoother driving
-        self.random_behavior_counter = 0
-        self.random_behavior_duration = 20  # Steps to perform random behavior
-        self.random_direction = 1  # 1 for right, -1 for left
-        self.is_random_walking = False
-
         # For tracking learning performance
         self.rewards_history = []
-        self.step_count = 0
-        self.episode_count = 0
-        self.last_plot_time = self.getTime()
 
         # Flag to track if target reached message has been printed
         self.target_reached_reported = False
@@ -139,19 +119,11 @@ class Slave(Robot):
         self.action_persistence_duration = RLConfig.ACTION_PERSISTENCE_INITIAL
         self.current_persistent_action = None  # Current action being executed
 
-        # Add tracking for previous exec_action
-        self.previous_exec_action = None
-
         logger.info(f"Slave robot initialization complete: {self.robot_name}")
 
     def run(self):
         """Main control loop for the slave robot."""
         logger.info("Starting slave robot control loop")
-
-        # Initialize variables for improved escape strategy
-        self.forward_failure_count = 0
-        self.last_escape_direction = None
-        self.escape_direction_counter = 0
 
         while True:
             # Read the supervisor order.
@@ -174,7 +146,6 @@ class Slave(Robot):
                     try:
                         reward = float(message[7:])
                         self.last_reward = reward
-                        self.reward_count += 1
 
                         # Track reward for plotting
                         self.rewards_history.append(reward)
@@ -210,11 +181,12 @@ class Slave(Robot):
                 elif message == "plot_learning":
                     self.plot_rewards()
 
-                # Special commands
-                elif message == "randomize":
-                    self.random_behavior_counter = self.random_behavior_duration
-                    self.random_direction = 1 if random.random() > 0.5 else -1
-                    self.is_random_walking = True
+                elif message == "load_q_table":
+                    try:
+                        self.q_agent.load_q_table(SimulationConfig.Q_TABLE_PATH)
+                        logger.info("Q-table loaded from file")
+                    except Exception as e:
+                        logger.error(f"Error loading Q-table: {e}")
 
                 else:
                     # Only print command messages under specific conditions
@@ -222,13 +194,8 @@ class Slave(Robot):
                         # Extract action number from command
                         try:
                             current_action = int(message.split(":")[1])
-                            # Only log when action changes
-                            if current_action != self.previous_exec_action:
-                                action_name = get_action_name(current_action)
-                                # logger.info(f"Received command: {action_name}")
-                                self.previous_exec_action = current_action
+                            action_name = get_action_name(current_action)
                         except (ValueError, IndexError):
-                            # If we can't parse the action, log it anyway
                             logger.info(f"Received command: {message}")
                     elif (
                         not message.startswith("reward:")
@@ -282,7 +249,6 @@ class Slave(Robot):
                         try:
                             new_rate = float(message[12:])
                             self.q_agent.exploration_rate = new_rate
-                            # logger.info(f"Exploration rate updated to {new_rate:.2f}")
                         except ValueError:
                             logger.error("Invalid exploration rate")
 
@@ -607,8 +573,6 @@ class Slave(Robot):
         self.orientation = 0.0
         self.action_persistence = 0
         self.current_persistent_action = None
-        self.is_random_walking = False
-        self.random_behavior_counter = 0
 
         # Give time for physics to settle
         for _ in range(3):

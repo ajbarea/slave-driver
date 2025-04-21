@@ -52,10 +52,6 @@ def setup_logger(name, level=logging.INFO, log_to_file=False, log_dir="logs"):
     return logger
 
 
-# Define a global logger for common use
-common_logger = setup_logger("common")
-
-
 def get_logger(name, level=logging.INFO, log_to_file=False):
     """
     Get a logger with the given name. Convenience function.

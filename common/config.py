@@ -33,24 +33,8 @@ class RLConfig:
     ACTION_PERSISTENCE_MIN = 1
     ACTION_PERSISTENCE_DECAY = 0.95
 
-    # Anti-spinning parameters - increase to be more lenient
-    MAX_CONSECUTIVE_ROTATIONS = 9
-    ROTATION_PENALTY_FACTOR = 0.5
-    FORWARD_BIAS = 0.45
-
-    # Add obstacle-related parameters
-    OBSTACLE_TURN_BONUS = 2.0  # Bonus for turning away from obstacles
-    OBSTACLE_FORWARD_PENALTY = 3.0  # Penalty for moving forward into obstacles
-
     # Target and reward parameters
     TARGET_THRESHOLD = 0.15
-    REWARD_SCALING = 1.0
-
-    # Reward shaping parameters
-    USE_REWARD_SHAPING = True
-    SHAPING_FACTOR = 1.0
-    MIN_SHAPING_FACTOR = 0.2
-    ADAPTIVE_SHAPING = True
 
     # Small negative reward for each step
     STEP_PENALTY = 0.1
@@ -70,10 +54,6 @@ class RobotConfig:
     TIME_STEP = 64
     DEFAULT_POSITION = [0.0, 0.0, 0.0]
 
-    # Robot state discretization
-    NUM_DISTANCE_BINS = 7
-    NUM_ANGLE_BINS = 8
-
     # Target positions for training
     # TARGET_POSITIONS = [[0.62, -0.61], [0.5, 0.5], [-0.5, 0.5]]
     TARGET_POSITIONS = [[0.62, -0.61]]
@@ -92,7 +72,6 @@ class SimulationConfig:
     LOG_TO_FILE = True
 
     # Reporting frequencies
-    REWARD_REPORT_FREQ = 20
     POSITION_UPDATE_FREQ = 5
 
     # File paths

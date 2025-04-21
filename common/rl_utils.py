@@ -8,12 +8,8 @@ and slave controllers.
 
 import math
 from typing import List, Tuple, Optional
-from common.logger import get_logger
 from common.common import calculate_distance, normalize_angle
 from common.config import RLConfig
-
-# Set up logger
-logger = get_logger(__name__)
 
 
 def get_discrete_state(
