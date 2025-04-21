@@ -10,6 +10,7 @@ import math
 from typing import List, Tuple, Optional
 from common.logger import get_logger
 from common.common import calculate_distance, normalize_angle
+from common.config import RLConfig
 
 # Set up logger
 logger = get_logger(__name__)
@@ -223,7 +224,7 @@ def calculate_reward(
             spin_penalty = -0.5  # Small penalty for spinning in place
 
     # Small step penalty to encourage efficiency
-    step_penalty = -0.1
+    step_penalty = -RLConfig.STEP_PENALTY
 
     # Combine all reward components
     total_reward = (

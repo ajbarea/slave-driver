@@ -46,10 +46,6 @@ class QLearningController:
         self.goal_seeking_start_time = 0
         self.goal_reached = False
 
-        # Position history for movement analysis
-        self.previous_positions = []
-        self.position_history_max = 10
-
     def start_learning(self):
         """Initialize the learning process."""
         self.logger.info("Starting learning process")
@@ -113,54 +109,6 @@ class QLearningController:
         self.previous_distance_to_target = current_distance
 
         return reward
-
-    def get_obstacle_factor(self):
-        """
-        Calculate a factor indicating obstacle presence based on recent turns.
-
-        Returns:
-            float: Value between 0-1 indicating likely obstacle presence
-        """
-        # Simply return a moderate value as we don't track action history anymore
-        return 0.3  # Default - moderate possibility
-
-    def update_position_history(self, position):
-        """Track position history for movement efficiency calculations."""
-        if len(self.previous_positions) >= self.position_history_max:
-            self.previous_positions.pop(0)
-        self.previous_positions.append(position)
-
-    def calculate_movement_efficiency(self):
-        """Calculate a bonus for efficient movement in relatively straight lines."""
-        if len(self.previous_positions) < 3:
-            return 0.0
-
-        # Calculate direct distance from start to end
-        start_pos = self.previous_positions[0]
-        end_pos = self.previous_positions[-1]
-        direct_distance = calculate_distance(start_pos, end_pos)
-
-        # Calculate total path length
-        path_length = 0.0
-        for i in range(1, len(self.previous_positions)):
-            path_length += calculate_distance(
-                self.previous_positions[i - 1], self.previous_positions[i]
-            )
-
-        if path_length < 0.01:  # Avoid division by very small numbers
-            return 0.0
-
-        # Efficiency ratio: direct distance / total path
-        # Higher ratio means straighter, more efficient path
-        efficiency = direct_distance / path_length
-
-        # Bonus for efficient movement
-        if efficiency > 0.8 and direct_distance > 0.1:
-            return 3.0  # Good bonus for straight-line progress
-        elif efficiency > 0.6:
-            return 1.5  # Smaller bonus for mostly straight movement
-
-        return 0.0
 
     def manage_training_step(self, position):
         """Process one training step."""

@@ -31,7 +31,6 @@ class Enumerate(object):
 
 class Slave(Robot):
     Mode = Enumerate("STOP MOVE_FORWARD AVOID_OBSTACLES TURN SEEK_GOAL LEARN")
-    Actions = Enumerate("FORWARD TURN_LEFT TURN_RIGHT BACKWARD STOP")
     timeStep = RobotConfig.TIME_STEP
     maxSpeed = RobotConfig.MAX_SPEED
     mode = Mode.AVOID_OBSTACLES
@@ -534,33 +533,6 @@ class Slave(Robot):
             right_sensor_value,
             wheel_velocities,
         )
-
-    def choose_escape_direction(self):
-        """Choose a better direction to escape when forward movement isn't possible."""
-        left_sensor = self.distanceSensors[0].getValue()
-        right_sensor = self.distanceSensors[1].getValue()
-
-        # If both sensors detect obstacles, back up
-        if left_sensor > 500 and right_sensor > 500:
-            return "backward"
-
-        # If left obstacle is closer, turn right
-        if left_sensor > right_sensor:
-            return "right"
-
-        # If right obstacle is closer, turn left
-        if right_sensor > left_sensor:
-            return "left"
-
-        # If unclear, use a random direction
-        return random.choice(["left", "right", "backward"])
-
-    def get_mode_name(self, mode_value):
-        """Convert a mode value to its string representation."""
-        for name, value in vars(self.Mode).items():
-            if value == mode_value:
-                return name
-        return f"UNKNOWN_MODE({mode_value})"
 
     def save_learning_progress(self):
         """Store current learning progress in the robot's custom data."""

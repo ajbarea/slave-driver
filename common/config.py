@@ -52,6 +52,9 @@ class RLConfig:
     MIN_SHAPING_FACTOR = 0.2
     ADAPTIVE_SHAPING = True
 
+    # Small negative reward for each step
+    STEP_PENALTY = 0.1
+
     # Command protocol for sending actions to slave
     ACTION_COMMAND_PREFIX = "exec_action:"
 
