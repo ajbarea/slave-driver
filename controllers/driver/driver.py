@@ -4,7 +4,7 @@ from controller import Supervisor  # type: ignore
 import logging
 import os
 from common.logger import get_logger
-from common.common import calculate_distance, plot_training_metrics
+from common.common import calculate_distance, plot_q_learning_progress
 from common.config import (
     SimulationConfig,
     RobotConfig,
@@ -107,7 +107,6 @@ class Driver(Supervisor):
 
     def clear_pending_commands(self):
         """Clear any pending commands in the message queue to ensure clean state."""
-        self.logger.info("Clearing pending commands to ensure clean state transition")
         # Just step the simulation a few times without sending commands
         for _ in range(5):
             self.step(self.TIME_STEP)
@@ -127,7 +126,6 @@ class Driver(Supervisor):
         # Check if the robot has reached the target
         if current_distance < RLConfig.TARGET_THRESHOLD:
             if not getattr(self.rl_controller, "goal_reached", False):
-                self.logger.info(f"🎯 Target reached! Distance: {current_distance:.2f}")
                 self.rl_controller.goal_reached = True
 
                 # Send stop command to the robot multiple times to ensure it stops
@@ -140,6 +138,10 @@ class Driver(Supervisor):
                     self.getTime() - self.rl_controller.goal_seeking_start_time
                 )
                 self.logger.info(f"Goal reached in {elapsed_time:.1f} seconds")
+
+                # Disable further goal seeking checks to prevent timeout
+                self.rl_controller.goal_seeking_active = False
+                return
 
         # Check for timeout
         current_time = self.getTime()
@@ -160,7 +162,7 @@ class Driver(Supervisor):
                 # If distance hasn't changed much in last check
                 if abs(current_distance - self.last_goal_seeking_distance) < 0.05:
                     self.stuck_counter = getattr(self, "stuck_counter", 0) + 1
-                    if self.stuck_counter >= 3:  # Stuck for 3 consecutive checks
+                    if self.stuck_counter >= 6:  # Stuck for 6 consecutive checks
                         self.logger.info(
                             f"Robot appears stuck at distance {current_distance:.2f}. Sending randomize command."
                         )
@@ -281,16 +283,15 @@ class Driver(Supervisor):
                 episodes = episodes[:min_len]
                 rewards = rewards[:min_len]
 
-            # Plot training metrics
-            plot_training_metrics(
-                episodes,
-                rewards,
+            # Plot Q‑learning progress
+            plot_q_learning_progress(
+                rewards=rewards,
                 filename="training_results",
                 save_dir=SimulationConfig.PLOT_DIR,
             )
 
             self.logger.info(
-                f"Training results plotted to {SimulationConfig.PLOT_DIR}/training_results.png"
+                f"Training results plotted to {SimulationConfig.PLOT_DIR}\\training_results.png"
             )
         except Exception as e:
             self.logger.error(f"Error plotting training results: {e}")

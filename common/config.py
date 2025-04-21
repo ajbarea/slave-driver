@@ -2,6 +2,13 @@
 Configuration module for robot learning parameters and simulation settings.
 """
 
+import os
+
+# Data directory
+DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "data"))
+Q_TABLE_PATH = os.path.join(DATA_DIR, "q_table.pkl")
+PLOT_DIR = DATA_DIR
+
 
 class RLConfig:
     """Reinforcement learning configuration parameters."""
@@ -9,22 +16,22 @@ class RLConfig:
     # Core RL parameters
     LEARNING_RATE = 0.1
     MIN_LEARNING_RATE = 0.03
-    DISCOUNT_FACTOR = 0.9
+    DISCOUNT_FACTOR = 0.95
     MIN_DISCOUNT_FACTOR = 0.7
-    EXPLORATION_RATE = 0.3
+    EXPLORATION_RATE = 0.4
     MIN_EXPLORATION_RATE = 0.05
-    EXPLORATION_DECAY = 0.98
+    EXPLORATION_DECAY = 0.985
     LEARNING_RATE_DECAY_BASE = 0.9995
     LEARNING_RATE_DECAY_DENOM = 20000
 
     # Episode parameters
     MAX_EPISODES = 100
-    MAX_STEPS_PER_EPISODE = 500
+    MAX_STEPS_PER_EPISODE = 600
 
     # Action parameters - adjust for smoother control
-    ACTION_PERSISTENCE_INITIAL = 4
-    ACTION_PERSISTENCE_MIN = 2
-    ACTION_PERSISTENCE_DECAY = 0.9
+    ACTION_PERSISTENCE_INITIAL = 3
+    ACTION_PERSISTENCE_MIN = 1
+    ACTION_PERSISTENCE_DECAY = 0.95
 
     # Anti-spinning parameters - increase to be more lenient
     MAX_CONSECUTIVE_ROTATIONS = 9
@@ -48,6 +55,9 @@ class RLConfig:
     # Command protocol for sending actions to slave
     ACTION_COMMAND_PREFIX = "exec_action:"
 
+    # Default path for Q-table
+    Q_TABLE_PATH: str = Q_TABLE_PATH
+
 
 class RobotConfig:
     """Robot configuration parameters."""
@@ -58,7 +68,7 @@ class RobotConfig:
     DEFAULT_POSITION = [0.0, 0.0, 0.0]
 
     # Robot state discretization
-    NUM_DISTANCE_BINS = 5
+    NUM_DISTANCE_BINS = 7
     NUM_ANGLE_BINS = 8
 
     # Target positions for training
@@ -83,11 +93,11 @@ class SimulationConfig:
     POSITION_UPDATE_FREQ = 5
 
     # File paths
-    Q_TABLE_PATH = "data/q_table.pkl"
-    PLOT_DIR = "data"
+    Q_TABLE_PATH = Q_TABLE_PATH
+    PLOT_DIR = PLOT_DIR
 
     # Message protocol configuration
     ENABLE_DETAILED_LOGGING = True
 
     # Goal seeking parameters
-    GOAL_SEEKING_TIMEOUT = 300  # Timeout for goal seeking in seconds
+    GOAL_SEEKING_TIMEOUT = 500  # Timeout for goal seeking in seconds

@@ -15,3 +15,4 @@ controllers/driver/data/*
 controllers/slave/data/*
 *.pyc
 examples/old_code.py
+data/*

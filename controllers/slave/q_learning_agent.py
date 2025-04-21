@@ -41,7 +41,7 @@ class QLearningAgent:
         exploration_rate: float = 0.3,
         min_exploration_rate: float = 0.05,
         max_speed: float = 10.0,
-        angle_bins: int = 6,
+        angle_bins: int = 8,
     ):
         """
         Initialize the Q-learning agent with learning parameters.
@@ -75,6 +75,12 @@ class QLearningAgent:
         self.td_errors: List[float] = []
         self.learning_rates: List[float] = []
         self.discount_factors: List[float] = []
+
+        # Load existing Q-table if available
+        try:
+            self.load_q_table(RLConfig.Q_TABLE_PATH)
+        except Exception as e:
+            logger.warning(f"Could not load Q-table: {e}")
 
     def get_discrete_state(
         self,
@@ -111,7 +117,7 @@ class QLearningAgent:
 
     def choose_action(self, state: Tuple, current_distance: float = None) -> int:
         """
-        Select an action using a simplified epsilon-greedy strategy.
+        Select an action using an enhanced epsilon-greedy strategy.
         Only allow STOP if close to the target.
 
         Args:
@@ -136,7 +142,12 @@ class QLearningAgent:
 
         # Exploration: choose a random action based on exploration rate
         if random.random() < self.exploration_rate:
-            return random.choice(action_indices)
+            # Random action selection - bias toward forward movement to speed up exploration of the environment
+            if (
+                random.random() < 0.5 and 0 in action_indices
+            ):  # 50% chance to go forward
+                return 0  # FORWARD
+            return random.choice(action_indices)  # Otherwise random
 
         # Exploitation: choose the action with the highest Q-value among allowed actions
         q_values = self.q_table[state]
@@ -195,7 +206,7 @@ class QLearningAgent:
         self, state: Tuple, action: int, reward: float, next_state: Tuple
     ) -> None:
         """
-        Update the Q-table using standard Q-learning.
+        Update the Q-table using standard Q-learning with adaptive parameters.
 
         Args:
             state: Previous state
@@ -218,13 +229,17 @@ class QLearningAgent:
         # Use adaptive learning rate decay
         adaptive_learning_rate = max(
             self.min_learning_rate,
-            self.learning_rate * (RLConfig.LEARNING_RATE_DECAY_BASE ** (self.total_updates / RLConfig.LEARNING_RATE_DECAY_DENOM)),
+            self.learning_rate
+            * (
+                RLConfig.LEARNING_RATE_DECAY_BASE
+                ** (self.total_updates / RLConfig.LEARNING_RATE_DECAY_DENOM)
+            ),
         )
 
         # Simplified adaptive discount factor
         adaptive_discount = max(
             self.min_discount_factor,
-            self.discount_factor * (0.999 ** (self.total_updates / 5000)),
+            self.discount_factor * (0.9995 ** (self.total_updates / 5000)),
         )
 
         # Store the learning parameters for analysis

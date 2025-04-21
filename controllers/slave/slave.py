@@ -265,9 +265,7 @@ class Slave(Robot):
                                 y = float(coords[1])
                                 self.target_position = [x, y]
                                 self.mode = self.Mode.SEEK_GOAL
-                                self.learning_active = (
-                                    False  # Turn off learning for exploitation
-                                )
+                                self.learning_active = False  # Exploitation
 
                                 # Reset action persistence to allow quicker reactions
                                 self.action_persistence = 0
@@ -435,9 +433,7 @@ class Slave(Robot):
                     if current_distance < RLConfig.TARGET_THRESHOLD:
                         # Target reached logic
                         if not self.target_reached_reported:
-                            logger.info(
-                                f"🎯 Target reached in SEEK_GOAL mode! Distance: {current_distance:.2f}"
-                            )
+                            logger.info("🎯 Target reached in SEEK_GOAL mode!")
                             self.target_reached_reported = True
 
                         speeds = [0.0, 0.0]  # Stop the robot

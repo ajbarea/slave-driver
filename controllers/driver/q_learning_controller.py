@@ -178,7 +178,7 @@ class QLearningController:
             self.driver.emitter.send(f"reward:{reward}".encode("utf-8"))
             self.episode_rewards.append(reward)
 
-            if SimulationConfig.ENABLE_DETAILED_LOGGING and self.episode_step % 20 == 0:
+            if SimulationConfig.ENABLE_DETAILED_LOGGING and self.episode_step % 50 == 0:
                 self.logger.info(
                     f"Training: Episode {self.episode_count}, Step {self.episode_step}, Distance {current_distance:.2f}, Reward:{reward:.2f}"
                 )
@@ -276,9 +276,6 @@ class QLearningController:
         self.action_counter = 0
 
         self.logger.info(f"Starting episode {self.episode_count}/{self.max_episodes}")
-        self.logger.info(
-            f"Target position: {target_position}, Start position: {start_position[:2]}"
-        )
 
         # Send updated target position to slave
         target_msg = f"learn:{target_position[0]},{target_position[1]}"

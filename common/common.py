@@ -440,141 +440,78 @@ def calculate_success_percentage(successes: int, total: int) -> float:
     return (successes / total) * 100.0
 
 
-def plot_learning_results(
+def plot_q_learning_progress(
     rewards: List[float],
-    title: str = "Learning Progress",
+    window: int = 20,
+    short_window: int = 5,
+    ema_span: int = 20,
+    title: str = "Q‑Learning Progress",
     filename: Optional[str] = None,
     save_dir: Optional[str] = None,
 ) -> None:
     """
-    Plot learning rewards over time, with optional smoothing and saving.
-
-    Args:
-        rewards (list): List of reward values.
-        title (str): Title for the plot.
-        filename (str, optional): Filename (without extension) to save the plot.
-        save_dir (str, optional): Directory path to save the plot.
-
-    Returns:
-        None
+    Plot episode rewards with:
+      - raw per-episode rewards
+      - short & long moving averages
+      - cumulative average
+      - exponential moving average (EMA)
     """
     if not rewards:
-        logger.warning("No rewards data to plot")
+        logger.warning("No rewards to plot")
         return
 
-    plt.figure(figsize=(12, 6))
-    plt.plot(rewards, label="Raw Rewards", color="lightblue", alpha=0.4)
+    episodes = list(range(1, len(rewards) + 1))
 
-    if len(rewards) > 10:
-        window = min(len(rewards) // 10, 50)
-        window = max(window, 2)
-        rewards_smoothed = np.convolve(rewards, np.ones(window) / window, mode="valid")
+    plt.figure(figsize=(10, 6))
+    # raw rewards
+    plt.plot(
+        episodes, rewards, color="lightblue", alpha=0.4, label="Reward per Episode"
+    )
+
+    # short moving average
+    if len(rewards) >= short_window:
+        ma_s = np.convolve(rewards, np.ones(short_window) / short_window, mode="valid")
+        ma_s_x = list(range(short_window, len(rewards) + 1))
         plt.plot(
-            range(window - 1, len(rewards)),  # Fixed x-axis alignment
-            rewards_smoothed,
-            linewidth=2,
-            label="Smoothed Rewards",
-            color="blue",
+            ma_s_x, ma_s, color="green", linewidth=2, label=f"{short_window}-Episode MA"
+        )
+
+    # long moving average
+    if len(rewards) >= window:
+        ma_l = np.convolve(rewards, np.ones(window) / window, mode="valid")
+        ma_l_x = list(range(window, len(rewards) + 1))
+        plt.plot(ma_l_x, ma_l, color="red", linewidth=2, label=f"{window}-Episode MA")
+
+    # cumulative average
+    cumavg = list(np.cumsum(rewards) / np.arange(1, len(rewards) + 1))
+    plt.plot(
+        episodes, cumavg, color="orange", linestyle="--", label="Cumulative Average"
+    )
+
+    # exponential moving average
+    if ema_span > 1 and len(rewards) > 0:
+        alpha = 2.0 / (ema_span + 1)
+        ema = [rewards[0]]
+        for r in rewards[1:]:
+            ema.append(alpha * r + (1 - alpha) * ema[-1])
+        plt.plot(
+            episodes, ema, color="purple", linestyle=":", label=f"{ema_span}-Span EMA"
         )
 
     plt.title(title)
-    plt.xlabel("Step")
-    plt.ylabel("Reward")
-    plt.grid(alpha=0.3)
-    plt.legend()
-
-    if filename:
-        if save_dir:
-            os.makedirs(save_dir, exist_ok=True)
-            plot_path = os.path.join(save_dir, f"{filename}.png")
-        else:
-            plot_path = f"{filename}.png"
-        plt.savefig(plot_path)
-        logger.info(f"Plot saved to {plot_path}")
-
-    plt.close()
-
-
-def plot_training_metrics(
-    episodes: List[int],
-    rewards: List[float],
-    success_rates: Optional[List[float]] = None,
-    filename: Optional[str] = None,
-    save_dir: Optional[str] = None,
-) -> None:
-    """
-    Plot training metrics including episode rewards and optional success rates.
-
-    Args:
-        episodes (list): Episode numbers.
-        rewards (list): Rewards per episode.
-        success_rates (list, optional): Success percentages per episode.
-        filename (str, optional): Filename (without extension) to save the plot.
-        save_dir (str, optional): Directory path to save the plot.
-
-    Returns:
-        None
-    """
-    if not rewards:
-        logger.warning("No data to plot")
-        return
-
-    num_plots = 2 if success_rates else 1
-    plt.figure(figsize=(12, 5 * num_plots))
-
-    plt.subplot(num_plots, 1, 1)
-    # Plot raw rewards
-    plt.plot(episodes, rewards, "b-", label="Episode Reward")
-
-    # Apply smoothing with proper array alignment
-    if len(rewards) > 3:
-        window = min(len(rewards) // 3, 5)
-        window = max(window, 2)
-        weights = np.ones(window) / window
-        rewards_smoothed = np.convolve(rewards, weights, mode="valid")
-
-        # Calculate valid x-axis points for smoothed data
-        valid_episodes = episodes[
-            window - 1 : len(episodes) - (window - 1) if window > 1 else None
-        ]
-
-        # Ensure arrays have matching lengths
-        min_len = min(len(valid_episodes), len(rewards_smoothed))
-        valid_episodes = valid_episodes[:min_len]
-        rewards_smoothed = rewards_smoothed[:min_len]
-
-        plt.plot(
-            valid_episodes, rewards_smoothed, "r-", linewidth=2, label="Smoothed Reward"
-        )
-
-    plt.title("Training Rewards")
     plt.xlabel("Episode")
     plt.ylabel("Total Reward")
-    plt.grid(alpha=0.3)
     plt.legend()
-
-    if success_rates:
-        plt.subplot(num_plots, 1, 2)
-        plt.plot(episodes, success_rates, "g-", label="Success Rate")
-        plt.title("Training Success Rate")
-        plt.xlabel("Episode")
-        plt.ylabel("Success Rate (%)")
-        plt.ylim(0, 100)
-        plt.grid(alpha=0.3)
-        plt.legend()
-
     plt.tight_layout()
 
     if filename:
-        if save_dir:
-            os.makedirs(save_dir, exist_ok=True)
-            filepath = os.path.join(save_dir, f"{filename}.png")
-        else:
-            filepath = f"{filename}.png"
-        plt.savefig(filepath)
-        logger.info(f"Training metrics plot saved to {filepath}")
+        save_dir = save_dir or "."
+        os.makedirs(save_dir, exist_ok=True)
+        path = os.path.join(save_dir, f"{filename}.png")
+        plt.savefig(path)
 
     plt.show()
+    plt.close()
 
 
 def calculate_state_potential(

@@ -22,10 +22,10 @@ def get_discrete_state(
     left_sensor: float,
     right_sensor: float,
     wheel_velocities: List[float],
-    angle_bins: int = 6,
+    angle_bins: int = 8,
 ) -> Optional[Tuple]:
     """
-    Generate a simplified discrete state representation for Q-learning.
+    Generate a refined discrete state representation for Q-learning.
 
     Args:
         position: Current [x, y] position
@@ -61,16 +61,15 @@ def get_discrete_state(
         int((relative_angle + math.pi) / (2 * math.pi / angle_bins)) % angle_bins
     )
 
-    # Simplified obstacle detection - binary state per sensor
-    left_obstacle = 1 if left_sensor > 500 else 0
-    right_obstacle = 1 if right_sensor > 500 else 0
+    # Obstacle detection
+    left_obstacle = discretize_sensor(left_sensor)
+    right_obstacle = discretize_sensor(right_sensor)
 
-    # Simplified velocity awareness - just moving or not
-    avg_velocity = (abs(wheel_velocities[0]) + abs(wheel_velocities[1])) / 2
-    is_moving = 1 if avg_velocity > 0.1 else 0
+    # Velocity awareness
+    velocity_state = discretize_velocity(wheel_velocities)
 
-    # Create the simplified state tuple
-    state = (distance_bin, angle_bin, left_obstacle, right_obstacle, is_moving)
+    # Create the state tuple
+    state = (distance_bin, angle_bin, left_obstacle, right_obstacle, velocity_state)
     return state
 
 
@@ -82,16 +81,78 @@ def discretize_distance(distance: float) -> int:
         distance: Distance to target
 
     Returns:
-        Discretized distance bin (0-3)
+        Discretized distance bin (0-6)
     """
-    if distance < 0.2:  # Very close
+    if distance < 0.1:  # Very close - precise control needed
         return 0
-    elif distance < 0.5:  # Medium-close
+    elif distance < 0.25:  # Close - approach carefully
         return 1
-    elif distance < 1.0:  # Medium
+    elif distance < 0.5:  # Medium-close
         return 2
-    else:  # Far
+    elif distance < 0.75:  # Medium
         return 3
+    elif distance < 1.25:  # Medium-far
+        return 4
+    elif distance < 2.0:  # Far
+        return 5
+    else:  # Very far
+        return 6
+
+
+def discretize_sensor(sensor_value: float) -> int:
+    """
+    Convert sensor readings to more granular obstacle detection states.
+
+    Args:
+        sensor_value: Distance sensor reading
+
+    Returns:
+        Discretized sensor state (0-3)
+    """
+    if sensor_value < 100:  # No obstacle detected
+        return 0
+    elif sensor_value < 400:  # Distant obstacle
+        return 1
+    elif sensor_value < 700:  # Medium-close obstacle
+        return 2
+    else:  # Very close obstacle
+        return 3
+
+
+def discretize_velocity(wheel_velocities: List[float]) -> int:
+    """
+    Discretize wheel velocities into movement states.
+
+    Args:
+        wheel_velocities: [left_wheel_velocity, right_wheel_velocity]
+
+    Returns:
+        Discretized velocity state (0-4)
+    """
+    left_vel = wheel_velocities[0]
+    right_vel = wheel_velocities[1]
+    avg_speed = (abs(left_vel) + abs(right_vel)) / 2
+
+    # Check if turning (wheels moving in opposite directions)
+    is_turning = left_vel * right_vel < 0
+
+    # Define states:
+    # 0: Stopped
+    # 1: Slow forward
+    # 2: Fast forward
+    # 3: Backward
+    # 4: Turning
+
+    if is_turning:
+        return 4
+    elif avg_speed < 0.1:  # Stopped
+        return 0
+    elif left_vel > 0 and right_vel > 0:  # Forward
+        return 2 if avg_speed > 5.0 else 1
+    elif left_vel < 0 and right_vel < 0:  # Backward
+        return 3
+    else:  # Default/unexpected
+        return 0
 
 
 def calculate_reward(
