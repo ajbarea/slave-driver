@@ -22,22 +22,23 @@ This project demonstrates how reinforcement learning can be used to create self-
 ## Project Structure
 
 ```plaintext
-slave_driver/
+slave-driver/
 ├── common/
 │   ├── common.py        # Shared utility functions
 │   ├── config.py        # Configuration parameters
-│   └── logger.py        # Logging utilities
+│   ├── logger.py        # Logging utilities
+│   └── rl_utils.py      # Reinforcement Learning utilities
 │
 ├── controllers/
 │   ├── driver/              # Supervisor controller
 │   │   ├── driver.py        # Main supervisor code
-│   │   ├── q_learning_controller.py  # RL controller
-│   │   └── data/            # Saved Q-tables and performance data
+│   │   └── q_learning_controller.py  # RL controller
 │   │       
 │   └── slave/               # Robot controller
 │       ├── slave.py         # Robot control code
-│       ├── q_learning_agent.py  # Agent implementation
-│       └── data/           # Performance visualization
+│       └── q_learning_agent.py  # Agent implementation
+│
+├── data/                  # Saved Q‑tables and learning plots
 │
 └── worlds/                  # Webots world files
 ```
